@@ -1,0 +1,239 @@
+// Prisma Schema for Social Media Post Scheduler (Instagram & LinkedIn)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==========================================
+// Enums
+// ==========================================
+
+enum Platform {
+  INSTAGRAM
+  LINKEDIN
+}
+
+enum PostStatus {
+  DRAFT
+  SCHEDULED
+  PROCESSING
+  PUBLISHED
+  PARTIALLY_PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+enum TargetStatus {
+  PENDING
+  PREPARING
+  READY
+  PUBLISHING
+  VERIFYING
+  PUBLISHED
+  FAILED
+  NEEDS_REVIEW
+  SKIPPED
+}
+
+enum FailureClass {
+  TRANSIENT
+  RATE_LIMIT
+  AUTH
+  PERMISSION
+  MEDIA
+  AMBIGUOUS
+  PERMANENT
+}
+
+// ==========================================
+// Authentication & User Models (Auth.js)
+// ==========================================
+
+model User {
+  id            String          @id @default(cuid())
+  name          String?
+  email         String?         @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+  
+  socialAccounts SocialAccount[]
+  posts          Post[]
+
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ==========================================
+// Social Media Connections & Targets
+// ==========================================
+
+model SocialAccount {
+  id                    String         @id @default(cuid())
+  userId                String
+  platform              Platform
+  platformUserId        String         // Provider's user/member ID (e.g. Meta User ID or LinkedIn Member URN)
+  name                  String?        // Profile display name
+  username              String?        // Profile handle / username
+  avatarUrl             String?        // Profile image URL
+  encryptedAccessToken  String         @db.Text // AES-256-GCM encrypted
+  encryptedRefreshToken String?        @db.Text
+  tokenExpiresAt        DateTime?
+  keyId                 String         // Key ID for token encryption key rotation
+  isValid               Boolean        @default(true) // Set to false on AUTH error
+  lastSyncAt            DateTime?
+
+  user                  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targets               SocialTarget[]
+
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  @@unique([userId, platform, platformUserId])
+}
+
+model SocialTarget {
+  id               String          @id @default(cuid())
+  socialAccountId  String
+  platform         Platform
+  targetType       String          // e.g. "INSTAGRAM_PROFESSIONAL", "LINKEDIN_MEMBER", "LINKEDIN_ORGANIZATION"
+  platformTargetId String          // Meta Instagram Business Account ID, LinkedIn URN, etc.
+  name             String          // Page or profile name
+  username         String?         // Instagram handle or target slug
+  avatarUrl        String?
+  isDefault        Boolean         @default(false)
+
+  socialAccount    SocialAccount   @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  publishTargets   PublishTarget[]
+
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@unique([socialAccountId, platformTargetId])
+}
+
+// ==========================================
+// Posts & Media Management
+// ==========================================
+
+model Post {
+  id          String          @id @default(cuid())
+  userId      String
+  caption     String?         @db.Text
+  status      PostStatus      @default(DRAFT)
+  scheduledAt DateTime?       // UTC scheduled time
+  timezone    String?         // User's local timezone (e.g. "Asia/Kolkata")
+  publishedAt DateTime?       // Timestamp when all/partial publishing finished
+
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  media       PostMedia[]
+  targets     PublishTarget[]
+
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+}
+
+model PostMedia {
+  id            String   @id @default(cuid())
+  postId        String
+  order         Int      // Sequence index (0, 1, 2...) for carousel / multi-image order
+  url           String   // Public URL hosted on Cloudinary / S3
+  publicId      String?  // Storage asset provider ID
+  width         Int?
+  height        Int?
+  aspectRatio   Float?   // Aspect ratio float (width / height)
+  format        String?  // Image format (e.g., "jpg", "png")
+  fileSizeBytes Int?
+
+  post          Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime @default(now())
+}
+
+// ==========================================
+// Publishing Target State Machine & Execution
+// ==========================================
+
+model PublishTarget {
+  id                  String           @id @default(cuid())
+  postId              String
+  socialTargetId      String
+  status              TargetStatus     @default(PENDING)
+  failureClass        FailureClass?
+  errorMessage        String?          @db.Text
+  providerPostId      String?          // Published post ID returned by Instagram/LinkedIn API
+  providerContainerId String?          // Container / upload URN ID for state tracking
+  metadata            Json?            // Intermediate steps / state details
+  scheduledAt         DateTime         // UTC scheduled time for claim query matching
+  lockedUntil         DateTime?        // Lease expiration timestamp for concurrency protection
+  lockToken           String?          // Unique worker/cron execution token
+  retryCount          Int              @default(0)
+  maxRetries          Int              @default(3)
+  nextRetryAt         DateTime?
+  publishedAt         DateTime?
+
+  post                Post             @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialTarget        SocialTarget     @relation(fields: [socialTargetId], references: [id], onDelete: Cascade)
+  attempts            PublishAttempt[]
+
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@unique([postId, socialTargetId])
+  @@index([status, scheduledAt])
+  @@index([lockedUntil])
+}
+
+model PublishAttempt {
+  id              String        @id @default(cuid())
+  publishTargetId String
+  status          TargetStatus
+  failureClass    FailureClass?
+  errorMessage    String?       @db.Text
+  durationMs      Int?
+  responsePayload Json?         // Sanitized execution response log
+
+  publishTarget   PublishTarget @relation(fields: [publishTargetId], references: [id], onDelete: Cascade)
+
+  createdAt       DateTime      @default(now())
+}
