@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { MobileNav, Sidebar } from "@/components/sidebar";
+import { Navbar } from "@/components/navbar";
 import { Icon, Pill } from "@/components/ui";
 import { accounts, posts, USER_TZ } from "@/lib/mock-data";
 import { daysUntil } from "@/lib/format";
@@ -78,6 +79,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
+        <Navbar />
         <div className="flex items-center justify-between gap-3 border-b border-line bg-surface px-4 py-3 lg:hidden">
           <span className="text-sm font-semibold tracking-tight">Social Scheduler</span>
           <Pill tone="review" dot>
