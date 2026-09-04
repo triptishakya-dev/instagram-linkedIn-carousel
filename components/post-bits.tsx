@@ -8,7 +8,7 @@ import {
   postStatusTone,
   targetStatusTone,
 } from "@/lib/format";
-import { targetById } from "@/lib/mock-data";
+import { targetById } from "@/lib/app-data";
 import type { Post, PublishTarget } from "@/lib/types";
 import { MediaTile, Pill, PlatformMark } from "./ui";
 
@@ -42,7 +42,12 @@ export function PostRow({ post }: { post: Post }) {
       className="flex gap-4 px-5 py-4 transition-colors hover:bg-surface-2"
     >
       <div className="w-14 shrink-0">
-        <MediaTile media={post.media[0]} forcedAspect="1:1" noteCrop={false} />
+        {post.media[0] ? (
+          <MediaTile media={post.media[0]} forcedAspect="1:1" noteCrop={false} />
+        ) : (
+          // Text-only is a valid LinkedIn post, so a row can have no media at all.
+          <div className="aspect-square rounded-lg border border-dashed border-line-strong" />
+        )}
         {post.media.length > 1 ? (
           <p className="mt-1 text-center font-mono text-[10px] text-subtle">
             +{post.media.length - 1}
