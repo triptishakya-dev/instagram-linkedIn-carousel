@@ -1,5 +1,5 @@
-import { Card, CardHeader, Icon, KeyValue, Meter, Mono, PageHeader, Pill, PlatformMark } from "@/components/ui";
-import { accounts, USER_TZ } from "@/lib/mock-data";
+import { Card, CardHeader, EmptyState, Icon, KeyValue, Meter, Mono, PageHeader, Pill, PlatformMark } from "@/components/ui";
+import { accounts, USER_TZ } from "@/lib/app-data";
 import { daysUntil, fmtDateTime, platformChip } from "@/lib/format";
 
 const VERSION_PINS = [
@@ -34,6 +34,13 @@ export default function AccountsPage() {
         title="Grants, scopes and quota"
         description="One OAuth grant per provider, many destinations under it. A single Meta login yields several Pages with distinct page tokens, which is why the callback has a selection step."
       />
+
+      {accounts.length === 0 ? (
+        <EmptyState
+          title="No provider connected"
+          body="Connect a Meta or LinkedIn grant to pick up its destinations, scopes and publishing quota. Nothing can be scheduled until at least one destination is publishable."
+        />
+      ) : null}
 
       <div className="space-y-5">
         {accounts.map((a) => {
