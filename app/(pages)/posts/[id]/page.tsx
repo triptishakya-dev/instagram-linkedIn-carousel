@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Card, CardHeader, Icon, KeyValue, MediaTile, Mono, Pill } from "@/components/ui";
 import { TargetPanel } from "@/components/target-panel";
-import { postById, posts, targetById } from "@/lib/mock-data";
+import { postById, posts, targetById } from "@/lib/app-data";
 import {
   fmtBytes,
   fmtDateTime,
