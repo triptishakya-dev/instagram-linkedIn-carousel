@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Card, EmptyState, Icon, PageHeader } from "@/components/ui";
 import { PostRow } from "@/components/post-bits";
-import { posts } from "@/lib/mock-data";
+import { posts } from "@/lib/app-data";
 
 const FILTERS = [
   { key: "ALL", label: "All" },
@@ -80,10 +80,17 @@ export default async function PostsPage(props: PageProps<"/posts">) {
       </nav>
 
       {visible.length === 0 ? (
-        <EmptyState
-          title="Nothing in this state"
-          body="Try another filter — or compose something and pick both targets to see how a single post splits into two independent units of work."
-        />
+        posts.length === 0 ? (
+          <EmptyState
+            title="No posts yet"
+            body="Compose one and pick a destination per platform. Each destination becomes its own unit of work, so it can be live on one platform while still moving on the other."
+          />
+        ) : (
+          <EmptyState
+            title="Nothing in this state"
+            body="No post is currently in this state. Try another filter."
+          />
+        )
       ) : (
         <Card>
           <ul className="divide-y divide-line">
