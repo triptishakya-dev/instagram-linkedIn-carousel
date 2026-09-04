@@ -17,7 +17,9 @@ export type VisualStyle =
   | "dark-mode-ui"
   | "glassmorphism"
   | "abstract-gradient"
-  | "cyberpunk-tech";
+  | "cyberpunk-tech"
+  | "tech-infographic"
+  | "architecture-diagram";
 
 export interface ImagePromptOptions {
   /** Main subject or topic of the graphic/photo */
@@ -44,6 +46,27 @@ export interface ImagePromptOptions {
   };
   /** Custom text overlay area directive to ensure space for captions/typography */
   leaveNegativeSpace?: boolean;
+  /** Tech architecture infographic details (for flowcharts, timelines, & metrics graphics) */
+  infographicDetails?: {
+    headerTitle?: string;
+    subtitle?: string;
+    flowchartNodes?: string[];
+    metricsText?: string;
+    takeawayQuote?: string;
+    timelineSteps?: string[];
+  };
+}
+
+export interface TechInfographicOptions {
+  title: string;
+  subtitle?: string;
+  flowchartNodes?: string[];
+  timelineSteps?: string[];
+  metricsText?: string;
+  takeawayQuote?: string;
+  platform?: Platform;
+  aspectRatio?: AspectRatio;
+  colorTheme?: string;
 }
 
 export interface GeneratedPromptResult {
@@ -163,6 +186,37 @@ export const STYLE_PRESETS: Record<
     camera: "Cinematic wide angle shot, low perspective",
     keywords: ["holographic display", "future technology overlay", "volumetric fog", "high tech visual"],
   },
+  "tech-infographic": {
+    description: "Sleek dark mode software architecture infographic featuring glowing flowchart nodes, request lifecycle timeline, metrics card, and key takeaway quote banner",
+    lighting: "Deep obsidian canvas `#0A0E1A` lit by glowing cyan `#00F0FF`, electric violet `#8B5CF6`, emerald green `#10B981`, and amber `#F59E0B` directional path arrows",
+    colorPalette: "Dark slate navy background `#0A0E1A`, neon electric cyan request flow paths, glowing purple cache cards, emerald green hit paths, amber database nodes",
+    camera: "Crisp top-down orthographic visual graphic layout with flat layered glassmorphism cards and sharp technical typography space",
+    keywords: [
+      "system architecture flowchart",
+      "dark mode software infographic diagram",
+      "backend data request flow journey",
+      "glowing neon visual nodes with icons",
+      "color coded connecting arrows",
+      "numbered lifecycle timeline steps",
+      "average response time metrics panel",
+      "highlight quote banner with quotation marks",
+      "LinkedIn software engineering carousel graphic"
+    ],
+  },
+  "architecture-diagram": {
+    description: "High-level cloud infrastructure and backend architecture schematic with microservices, cache layers, load balancers, and database clusters",
+    lighting: "Self-illuminating glowing neon circuit paths on dark slate backdrop",
+    colorPalette: "Midnight obsidian background `#090D16`, electric blue `#38BDF8`, purple `#A855F7`, cyan `#06B6D4` node highlights",
+    camera: "Direct front orthographic schematic layout, clean structured multi-column arrangement",
+    keywords: [
+      "cloud architecture diagram",
+      "microservices system schematic",
+      "dark mode developer visual",
+      "glowing data pipeline nodes",
+      "Load Balancer, Redis Cache, SQL Database icons",
+      "clean technical visual hierarchy"
+    ],
+  },
 };
 
 /**
@@ -214,9 +268,46 @@ export function buildImagePrompt(options: ImagePromptOptions): GeneratedPromptRe
   parts.push(`Style: ${preset.description}`);
   parts.push(`Keywords: ${preset.keywords.join(", ")}`);
 
-  // 3. Composition & Space
-  if (leaveNegativeSpace) {
-    parts.push("Composition: Clean uncluttered composition with empty negative space designated for text overlay, rule of thirds placement");
+  // 3. Infographic & Architecture Layout (if applicable)
+  if (style === "tech-infographic" || style === "architecture-diagram" || options.infographicDetails) {
+    const details = options.infographicDetails || {};
+    const nodesStr = details.flowchartNodes
+      ? details.flowchartNodes.join(" -> ")
+      : "Browser (User Request) -> Load Balancer -> Application Server -> Cache Check (is data in Redis?) -> Redis Cache / Database Cluster -> HTTP Response";
+    const quoteStr =
+      details.takeawayQuote ||
+      "Fast applications don't always use faster databases — they avoid unnecessary database queries.";
+    const metricsStr =
+      details.metricsText ||
+      "Average Response Time: Cache Hit 1 - 5 ms | Database Query 20 - 150 ms";
+
+    parts.push("Layout Structure: Comprehensive dark-mode tech visual layout with high visual contrast");
+    parts.push(
+      `Header Section: Bold header titled "${
+        details.headerTitle || topic
+      }" with subtitle "${details.subtitle || "A step-by-step journey inside a modern backend application"}"`
+    );
+    parts.push(
+      `Central Flowchart Diagram: Connected workflow nodes (${nodesStr}) with glowing neon directional path lines. Color legend: Blue for Request Flow, Green for Cache Hit (Fast Path), Orange for Cache Miss (DB Path), Purple for Response Flow`
+    );
+    parts.push(
+      "Side Panel: 'Backend Components' legend listing Load Balancer, Application Server, Redis Cache, Database Cluster, HTTP Response with glowing 3D-like icons"
+    );
+    parts.push(
+      "Lower Section Timeline: 'Request Lifecycle Timeline' containing numbered steps (1 through 8) inside glowing circles with vector icons"
+    );
+    parts.push(`Metrics Stat Box: Card displaying '${metricsStr}' with green and orange metric highlights`);
+    parts.push(
+      `Takeaway Banner: Dark frosted glass quotation block with blue quotes around '${quoteStr}'`
+    );
+    parts.push(
+      "Footer Status Badges: Sleek glowing pill tags displaying [Fast Response], [Scalable], [Reliable], [Cached], and [Production Ready]"
+    );
+  } else if (leaveNegativeSpace) {
+    // Composition & Space for standard graphics
+    parts.push(
+      "Composition: Clean uncluttered composition with empty negative space designated for text overlay, rule of thirds placement"
+    );
   } else {
     parts.push("Composition: Balanced central focal point, wide framed, dramatic visual hierarchy");
   }
@@ -235,10 +326,15 @@ export function buildImagePrompt(options: ImagePromptOptions): GeneratedPromptRe
   const mainPrompt = parts.join(". ") + ".";
 
   // Generator-specific formatting
-  const midjourneyAspect = aspectRatio === "4:5" ? "--ar 4:5" : aspectRatio === "1.91:1" ? "--ar 16:9" : `--ar ${aspectRatio.replace(":", ":")}`;
+  const midjourneyAspect =
+    aspectRatio === "4:5"
+      ? "--ar 4:5"
+      : aspectRatio === "1.91:1"
+      ? "--ar 16:9"
+      : `--ar ${aspectRatio.replace(":", ":")}`;
   const midjourneyPrompt = `${mainPrompt} ${midjourneyAspect} --style raw --v 6.0 --no ${DEFAULT_NEGATIVE_PROMPT}`;
-  const dallE3Prompt = `Create a high quality graphic for ${platform} (${aspectRatio} ratio). ${mainPrompt} Ensure there are no grammatical spelling artifacts, no unwanted random text unless specified, and maintain clean composition suitable for social media.`;
-  const fluxPrompt = `${mainPrompt}, ${aspectRatio} aspect ratio, masterpiece, highly detailed.`;
+  const dallE3Prompt = `Create a high quality graphic for ${platform} (${aspectRatio} ratio). ${mainPrompt} Ensure there are no grammatical spelling artifacts, clean typography placement, and crisp visual diagram hierarchy.`;
+  const fluxPrompt = `${mainPrompt}, ${aspectRatio} aspect ratio, masterpiece, highly detailed developer infographic diagram.`;
 
   return {
     prompt: mainPrompt,
@@ -254,6 +350,62 @@ export function buildImagePrompt(options: ImagePromptOptions): GeneratedPromptRe
       },
     },
   };
+}
+
+/**
+ * Build a specialized AI prompt for developer system architecture flowcharts & tech infographics
+ * matching LinkedIn & Instagram backend journey diagrams.
+ */
+export function buildTechInfographicPrompt(
+  options: TechInfographicOptions
+): GeneratedPromptResult {
+  const {
+    title,
+    subtitle = "A step-by-step journey inside a modern backend application",
+    flowchartNodes = [
+      "Browser (User Request)",
+      "Load Balancer",
+      "Application Server",
+      "Cache Check (is data in Redis?)",
+      "Redis Cache (Return data instantly)",
+      "Database Cluster (SQL/NoSQL)",
+      "Store in Redis Cache",
+      "HTTP Response",
+    ],
+    timelineSteps = [
+      "1. Browser sends request",
+      "2. Load Balancer selects server",
+      "3. Application Server processes request",
+      "4. Check Redis Cache",
+      "5. Cache Hit -> Return OR Cache Miss -> Query Database",
+      "6. Save data in Cache",
+      "7. Send HTTP Response",
+      "8. Browser renders webpage",
+    ],
+    metricsText = "Average Response Time: Cache Hit 1 - 5 ms | Database Query 20 - 150 ms",
+    takeawayQuote = "Fast applications don't always use faster databases — they avoid unnecessary database queries.",
+    platform = "LINKEDIN",
+    aspectRatio = platform === "LINKEDIN" ? "1.91:1" : "4:5",
+    colorTheme = "Dark obsidian navy `#0A0E1A`, electric cyan `#00F0FF`, violet `#8B5CF6`, emerald green `#10B981`, amber orange `#F59E0B`",
+  } = options;
+
+  return buildImagePrompt({
+    topic: `Tech Architecture Diagram: "${title}"`,
+    style: "tech-infographic",
+    platform,
+    aspectRatio,
+    colorPalette: colorTheme,
+    mood: "authoritative, technical, high contrast, modern developer, high engagement LinkedIn infographic",
+    infographicDetails: {
+      headerTitle: title,
+      subtitle,
+      flowchartNodes,
+      metricsText,
+      takeawayQuote,
+      timelineSteps,
+    },
+    leaveNegativeSpace: false,
+  });
 }
 
 /**
@@ -315,6 +467,14 @@ export function getSampleSocialPrompts() {
     mood: "executive, authoritative, clean corporate tech",
   });
 
+  const backendInfographic = buildTechInfographicPrompt({
+    title: "What Happens After Your Request Reaches the Server?",
+    subtitle: "A step-by-step journey inside a modern backend application",
+    takeawayQuote: "Fast applications don't always use faster databases — they avoid unnecessary database queries.",
+    platform: "LINKEDIN",
+    aspectRatio: "1.91:1",
+  });
+
   const igCarousel = buildCarouselPrompts(
     "How to Master Next.js Server Components",
     4,
@@ -322,5 +482,5 @@ export function getSampleSocialPrompts() {
     "INSTAGRAM"
   );
 
-  return { igPost, linkedInPost, igCarousel };
+  return { igPost, linkedInPost, backendInfographic, igCarousel };
 }
