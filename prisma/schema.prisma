@@ -160,10 +160,18 @@ model Post {
   id          String          @id @default(cuid())
   userId      String
   caption     String?         @db.Text
+  captionPrompt String?       @db.Text // Instructions the caption was generated from
   status      PostStatus      @default(DRAFT)
   scheduledAt DateTime?       // UTC scheduled time
   timezone    String?         // User's local timezone (e.g. "Asia/Kolkata")
+  staleAfterMinutes Int       @default(30) // Skip publishing if the worker picks it up this late
   publishedAt DateTime?       // Timestamp when all/partial publishing finished
+
+  /// Platforms the author selected. PublishTarget rows can only exist once a
+  /// SocialTarget is connected, so this records intent in the meantime.
+  intendedPlatforms Platform[]
+  /// Set by the client to make a retried submit return the original post.
+  idempotencyKey String?      @unique
 
   user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   media       PostMedia[]
