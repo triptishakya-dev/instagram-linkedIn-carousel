@@ -12,7 +12,7 @@ import {
   tonePanel,
   toneText,
 } from "@/lib/format";
-import { accountForTarget, targetById, USER_TZ } from "@/lib/mock-data";
+import { accountForTarget, targetById, USER_TZ } from "@/lib/app-data";
 import type { Post, PublishTarget } from "@/lib/types";
 import { Card, Icon, Mono, Pill, PlatformMark } from "./ui";
 
