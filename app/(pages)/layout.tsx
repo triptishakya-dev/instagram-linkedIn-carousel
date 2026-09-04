@@ -3,7 +3,7 @@ import Link from "next/link";
 import { MobileNav, Sidebar } from "@/components/sidebar";
 import { Navbar } from "@/components/navbar";
 import { Icon, Pill } from "@/components/ui";
-import { accounts, posts, USER_TZ } from "@/lib/mock-data";
+import { accounts, posts } from "@/lib/app-data";
 import { daysUntil } from "@/lib/format";
 
 export default function AppLayout({ children }: { children: ReactNode }) {
@@ -69,12 +69,6 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               </p>
             </Link>
           ) : null}
-
-          <div className="rounded-lg border border-line bg-surface-2 p-3">
-            <p className="text-[11px] font-medium text-muted">Ansuman Dash</p>
-            <p className="truncate text-[11px] text-subtle">ansuman@rubenius.in</p>
-            <p className="mt-1.5 text-[10px] text-subtle">{USER_TZ}</p>
-          </div>
         </div>
       </aside>
 
@@ -82,9 +76,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         <Navbar />
         <div className="flex items-center justify-between gap-3 border-b border-line bg-surface px-4 py-3 lg:hidden">
           <span className="text-sm font-semibold tracking-tight">Social Scheduler</span>
-          <Pill tone="review" dot>
-            {needsReview} to review
-          </Pill>
+          {needsReview > 0 ? (
+            <Pill tone="review" dot>
+              {needsReview} to review
+            </Pill>
+          ) : null}
         </div>
         <MobileNav />
         <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
