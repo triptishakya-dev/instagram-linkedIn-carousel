@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "worker:image": "ts-node worker/start-worker.ts",
+    "worker:image": "node scripts/run-worker.mjs",
+    "worker:image:raw": "ts-node worker/start-worker.ts",
+    "worker:logs": "node scripts/worker-logs.mjs",
     "lint": "eslint",
     "postinstall": "prisma skills sync || exit 0"
   },
