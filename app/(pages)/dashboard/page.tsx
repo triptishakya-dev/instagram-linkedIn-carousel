@@ -11,7 +11,7 @@ import {
   Mono,
 } from "@/components/ui";
 import { PostRow } from "@/components/post-bits";
-import { accounts, NOW, posts, targetById, USER_TZ } from "@/lib/mock-data";
+import { accounts, posts, scheduleCeiling, targetById, USER_TZ } from "@/lib/app-data";
 import {
   daysUntil,
   fmtDateTime,
@@ -36,8 +36,13 @@ export default function DashboardPage() {
     (a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime(),
   );
 
-  const linkedin = accounts.find((a) => a.platform === "LINKEDIN")!;
-  const expiryDays = linkedin.tokenExpiresAt ? daysUntil(linkedin.tokenExpiresAt) : null;
+  const finished = posts
+    .filter((p) => ["PUBLISHED", "PARTIALLY_PUBLISHED", "FAILED"].includes(p.status))
+    .sort((a, b) => new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime());
+
+  const linkedin = accounts.find((a) => a.platform === "LINKEDIN");
+  const expiry = linkedin?.tokenExpiresAt ?? null;
+  const expiryDays = expiry ? daysUntil(expiry) : null;
 
   return (
     <div className="space-y-8">
@@ -63,7 +68,7 @@ export default function DashboardPage() {
       />
 
       {/* ------------------------------------------------ what needs a human */}
-      {needsReview.length > 0 || (expiryDays !== null && expiryDays <= 14) ? (
+      {needsReview.length > 0 || (expiry && expiryDays !== null && expiryDays <= 14) ? (
         <div className="grid gap-4 md:grid-cols-2">
           {needsReview.length > 0 ? (
             <Card className="border-review/30 bg-review-soft/40">
@@ -103,7 +108,7 @@ export default function DashboardPage() {
             </Card>
           ) : null}
 
-          {expiryDays !== null && expiryDays <= 14 ? (
+          {expiry && expiryDays !== null && expiryDays <= 14 ? (
             <Card className="border-warn/30 bg-warn-soft/40">
               <div className="p-5">
                 <div className="flex items-center gap-2">
@@ -120,12 +125,12 @@ export default function DashboardPage() {
                 <dl className="mt-3 divide-y divide-line rounded-lg border border-line bg-surface px-3">
                   <KeyValue
                     k="Expires"
-                    v={fmtDateTime(linkedin.tokenExpiresAt!, USER_TZ)}
+                    v={fmtDateTime(expiry, USER_TZ)}
                   />
                   <KeyValue k="Refresh token" v={<Pill tone="danger">Not granted</Pill>} />
                   <KeyValue
                     k="Scheduling capped at"
-                    v={<Mono>2026-09-09 · expiry − 2d</Mono>}
+                    v={<Mono>{scheduleCeiling() ?? "—"} · expiry − 2d</Mono>}
                   />
                 </dl>
                 <Link
@@ -217,6 +222,21 @@ export default function DashboardPage() {
       </Card>
 
       {/* -------------------------------------------------------------- quota */}
+      {accounts.length === 0 ? (
+        <Card>
+          <CardHeader
+            title="API budget"
+            hint="Read live from the provider at publish time — never hardcoded."
+          />
+          <p className="px-5 py-8 text-center text-xs text-subtle">
+            No connected account.{" "}
+            <Link href="/accounts" className="font-medium text-accent hover:underline">
+              Connect Instagram or LinkedIn
+            </Link>{" "}
+            to see its publishing budget.
+          </p>
+        </Card>
+      ) : (
       <div className="grid gap-4 md:grid-cols-2">
         {accounts.map((a) => {
           const pct = Math.round((a.quota.used / a.quota.limit) * 100);
@@ -246,6 +266,7 @@ export default function DashboardPage() {
           );
         })}
       </div>
+      )}
 
       {/* ----------------------------------------------------------- up next */}
       <Card>
@@ -258,35 +279,36 @@ export default function DashboardPage() {
             </Link>
           }
         />
-        <ul className="divide-y divide-line">
-          {upcoming.map((p) => (
-            <li key={p.id}>
-              <PostRow post={p} />
-            </li>
-          ))}
-        </ul>
+        {upcoming.length === 0 ? (
+          <p className="px-5 py-8 text-center text-xs text-subtle">Nothing scheduled yet.</p>
+        ) : (
+          <ul className="divide-y divide-line">
+            {upcoming.map((p) => (
+              <li key={p.id}>
+                <PostRow post={p} />
+              </li>
+            ))}
+          </ul>
+        )}
       </Card>
 
       {/* --------------------------------------------------------- recent run */}
       <Card>
         <CardHeader title="Recently finished" hint="Terminal outcomes, most recent first." />
-        <ul className="divide-y divide-line">
-          {posts
-            .filter((p) => ["PUBLISHED", "PARTIALLY_PUBLISHED", "FAILED"].includes(p.status))
-            .sort(
-              (a, b) => new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime(),
-            )
-            .map((p) => (
+        {finished.length === 0 ? (
+          <p className="px-5 py-8 text-center text-xs text-subtle">
+            Nothing has run yet.
+          </p>
+        ) : (
+          <ul className="divide-y divide-line">
+            {finished.map((p) => (
               <li key={p.id}>
                 <PostRow post={p} />
               </li>
             ))}
-        </ul>
+          </ul>
+        )}
       </Card>
-
-      <p className="pb-2 text-center text-[11px] text-subtle">
-        Cron last ticked {fmtRelative(NOW)} · UI-only build, all data is fixture data
-      </p>
     </div>
   );
 }
