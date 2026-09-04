@@ -1,4 +1,4 @@
-import { NOW } from "./mock-data";
+import { now } from "./app-data";
 import type { FailureClass, Platform, PostStatus, TargetStatus } from "./types";
 
 /* ---------------------------------------------------------------- dates --
@@ -56,9 +56,9 @@ export function dayKey(iso: string, tz: string) {
   }).format(new Date(iso));
 }
 
-/** Relative to the frozen `NOW`, never to the wall clock. */
+/** Relative to the current instant. */
 export function fmtRelative(iso: string) {
-  const delta = new Date(iso).getTime() - new Date(NOW).getTime();
+  const delta = new Date(iso).getTime() - new Date(now()).getTime();
   const abs = Math.abs(delta);
   const mins = Math.round(abs / 60000);
   const hours = Math.round(abs / 3600000);
@@ -75,7 +75,7 @@ export function fmtRelative(iso: string) {
 }
 
 export function daysUntil(iso: string) {
-  return Math.round((new Date(iso).getTime() - new Date(NOW).getTime()) / 86400000);
+  return Math.round((new Date(iso).getTime() - new Date(now()).getTime()) / 86400000);
 }
 
 export function fmtBytes(n: number) {
