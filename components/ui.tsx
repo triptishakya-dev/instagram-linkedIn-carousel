@@ -184,7 +184,9 @@ export type IconName =
   | "arrow"
   | "image"
   | "shield"
-  | "refresh";
+  | "refresh"
+  | "eye"
+  | "close";
 
 const paths: Record<IconName, ReactNode> = {
   grid: (
@@ -257,6 +259,17 @@ const paths: Record<IconName, ReactNode> = {
       <path d="M20 11.5A8 8 0 0 0 6.3 6.3L4 8.5" />
       <path d="M4 12.5a8 8 0 0 0 13.7 5.2L20 15.5" />
       <path d="M4 4.5v4h4M20 19.5v-4h-4" />
+    </>
+  ),
+  eye: (
+    <>
+      <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  close: (
+    <>
+      <path d="M18 6L6 18M6 6l12 12" />
     </>
   ),
 };
