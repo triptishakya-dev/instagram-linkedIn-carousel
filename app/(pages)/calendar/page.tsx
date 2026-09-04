@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Card, CardHeader, Icon, PageHeader, Pill, PlatformMark } from "@/components/ui";
-import { NOW, posts, targetById, USER_TZ } from "@/lib/mock-data";
+import { now, posts, targetById, USER_TZ } from "@/lib/app-data";
 import {
   dayKey,
   fmtTime,
@@ -18,7 +18,8 @@ const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 export default async function CalendarPage(props: PageProps<"/calendar">) {
   const { m } = await props.searchParams;
-  const monthParam = (Array.isArray(m) ? m[0] : m) ?? dayKey(NOW, USER_TZ).slice(0, 7);
+  const today = now();
+  const monthParam = (Array.isArray(m) ? m[0] : m) ?? dayKey(today, USER_TZ).slice(0, 7);
   const [year, month] = monthParam.split("-").map(Number);
 
   // Built in UTC so the grid never depends on the server's own zone.
@@ -37,7 +38,7 @@ export default async function CalendarPage(props: PageProps<"/calendar">) {
 
   const prev = month === 1 ? `${year - 1}-12` : `${year}-${String(month - 1).padStart(2, "0")}`;
   const next = month === 12 ? `${year + 1}-01` : `${year}-${String(month + 1).padStart(2, "0")}`;
-  const todayKey = dayKey(NOW, USER_TZ);
+  const todayKey = dayKey(today, USER_TZ);
 
   const monthPosts = posts
     .filter((p) => dayKey(p.scheduledAt, USER_TZ).startsWith(monthParam))
