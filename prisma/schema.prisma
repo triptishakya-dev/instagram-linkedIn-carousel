@@ -49,6 +49,19 @@ enum FailureClass {
   PERMANENT
 }
 
+enum GoalStatus {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+enum Cadence {
+  DAILY
+  ALTERNATE
+  WEEKLY
+  MONTHLY
+}
+
 // ==========================================
 // Authentication & User Models (Auth.js)
 // ==========================================
@@ -64,6 +77,7 @@ model User {
   
   socialAccounts SocialAccount[]
   posts          Post[]
+  goals          Goal[]
 
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -159,6 +173,7 @@ model SocialTarget {
 model Post {
   id          String          @id @default(cuid())
   userId      String
+  goalId      String?         // Reference to Goal
   caption     String?         @db.Text
   captionPrompt String?       @db.Text // Instructions the caption was generated from
   status      PostStatus      @default(DRAFT)
@@ -174,11 +189,39 @@ model Post {
   idempotencyKey String?      @unique
 
   user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal        Goal?           @relation(fields: [goalId], references: [id], onDelete: SetNull)
   media       PostMedia[]
   targets     PublishTarget[]
 
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
+}
+
+// ==========================================
+// Content Goals & Campaigns
+// ==========================================
+
+model Goal {
+  id                String      @id @default(cuid())
+  userId            String
+  name              String
+  platforms         Platform[]
+  brandLogoAssetId  String?
+  captionPrompt     String?     @db.Text
+  imagePrompt       String?     @db.Text
+  startDate         DateTime
+  endDate           DateTime?
+  schedule          Json        // Stores schedule config: { cadence, time, weekdays, monthDay }
+  referenceAssetIds String[]
+  imageAssetIds     String[]
+  modelId           String?
+  status            GoalStatus  @default(ACTIVE)
+
+  user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  posts             Post[]
+
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
 }
 
 model PostMedia {
