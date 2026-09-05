@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { Overview } from "@/components/reds/views/Overview";
 
-export default function Home() {
-  redirect("/dashboard");
+export default function Page() {
+  return <Overview />;
 }
