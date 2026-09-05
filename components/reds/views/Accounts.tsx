@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PILL } from "@/lib/reds/data";
 import { MONO, absDT, inr, num } from "@/lib/reds/format";
 import { seg, useReds } from "../store";
@@ -34,8 +34,51 @@ export function Accounts() {
     both: "mdl-sonnet",
   });
 
-  const setVal = <K extends keyof Model>(id: string, k: K, v: Model[K]) =>
+  useEffect(() => {
+    fetch("/api/models")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.models && Array.isArray(data.models)) {
+          s.setModels(
+            data.models.map((m: any) => ({
+              id: m.id,
+              label: m.label,
+              provider: m.provider,
+              role: (m.role || "BOTH").toLowerCase() as ModelRole,
+              inputPricePerMTokInr: m.inputPricePerMTokInr,
+              outputPricePerMTokInr: m.outputPricePerMTokInr,
+              maxTokens: m.maxTokens,
+              temperature: m.temperature,
+              enabled: m.enabled,
+              keyLast4: m.keyLast4 || undefined,
+            })),
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const setVal = <K extends keyof Model>(id: string, k: K, v: Model[K]) => {
     s.setModels((ms) => ms.map((m) => (m.id === id ? { ...m, [k]: v } : m)));
+
+    // Sync field change to PostgreSQL database
+    const payloadKey =
+      k === "inputPricePerMTokInr"
+        ? "inputPricePerMTokInr"
+        : k === "outputPricePerMTokInr"
+          ? "outputPricePerMTokInr"
+          : k === "role"
+            ? "role"
+            : k;
+
+    const payloadValue = k === "role" ? (v as string).toUpperCase() : v;
+
+    fetch(`/api/models/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [payloadKey]: payloadValue }),
+    }).catch(() => {});
+  };
 
   const scheduledCount = (plat: Platform) =>
     s.posts.filter((p) => p.state === "scheduled" && p.platforms.includes(plat)).length;
