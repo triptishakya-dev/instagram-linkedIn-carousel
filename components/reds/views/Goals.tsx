@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { PILL } from "@/lib/reds/data";
 import { MONO, absDT, inr, relDT } from "@/lib/reds/format";
 import { EmptyState } from "../charts";
@@ -35,6 +36,35 @@ export function Goals() {
 
 function GoalsInner({ now }: { now: number }) {
   const s = useReds();
+
+  useEffect(() => {
+    fetch("/api/goals")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.goals && Array.isArray(data.goals)) {
+          s.setGoals(
+            data.goals.map((g: any) => ({
+              id: g.id,
+              name: g.name,
+              platforms: (g.platforms || []).map((p: string) => p.toLowerCase()),
+              brandLogoAssetId: g.brandLogoAssetId || "",
+              captionPrompt: g.captionPrompt || "",
+              imagePrompt: g.imagePrompt || "",
+              startDate: g.startDate,
+              endDate: g.endDate,
+              schedule: g.schedule || { cadence: "weekly", time: "09:30", weekdays: [], monthDay: 1 },
+              referenceAssetIds: g.referenceAssetIds || [],
+              imageAssetIds: g.imageAssetIds || [],
+              modelId: g.modelId || "",
+              status: (g.status || "ACTIVE").toLowerCase(),
+              createdAt: g.createdAt,
+              updatedAt: g.updatedAt,
+            })),
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const newGoal = () => {
     s.setGoalDraft(null);
