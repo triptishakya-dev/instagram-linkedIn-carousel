@@ -4,7 +4,7 @@ import { useState } from "react";
 import { PILL, STATES, TINTS } from "@/lib/reds/data";
 import { MONO, absDT, fmtBytes, inr, iso } from "@/lib/reds/format";
 import { useReds, seg } from "./store";
-import type { Asset, ModelRole } from "@/lib/reds/types";
+import type { Asset, Model, ModelRole } from "@/lib/reds/types";
 
 const SCRIM: React.CSSProperties = {
   position: "fixed",
@@ -677,25 +677,50 @@ function NewModelModal() {
             type="button"
             aria-disabled={bad}
             title={hint}
-            onClick={() => {
+            onClick={async () => {
               if (bad) { touch("label"); touch("provider"); touch("key"); return; }
-              s.setModels((ms) => [
-                ...ms,
-                {
-                  id: "mdl-" + d.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 18),
-                  label: d.label.trim(),
-                  provider: d.provider.trim(),
-                  role: d.role,
-                  inputPricePerMTokInr: Number(d.inPrice),
-                  outputPricePerMTokInr: Number(d.outPrice),
-                  maxTokens: Number(d.maxTokens),
-                  temperature: Number(d.temperature),
-                  enabled: d.enabled,
-                  keyLast4: d.key.trim().slice(-4),
-                },
-              ]);
-              s.toast(d.label.trim() + " added");
-              close();
+              try {
+                const res = await fetch("/api/models", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    label: d.label.trim(),
+                    provider: d.provider.trim(),
+                    role: d.role.toUpperCase(),
+                    inputPricePerMTokInr: Number(d.inPrice),
+                    outputPricePerMTokInr: Number(d.outPrice),
+                    maxTokens: Number(d.maxTokens),
+                    temperature: Number(d.temperature),
+                    enabled: d.enabled,
+                    key: d.key.trim(),
+                  }),
+                });
+
+                if (!res.ok) {
+                  const errData = await res.json().catch(() => ({}));
+                  throw new Error(errData.message || "Failed to add model.");
+                }
+
+                const savedModel = await res.json();
+                const formattedModel: Model = {
+                  id: savedModel.id,
+                  label: savedModel.label,
+                  provider: savedModel.provider,
+                  role: (savedModel.role || "BOTH").toLowerCase() as ModelRole,
+                  inputPricePerMTokInr: savedModel.inputPricePerMTokInr,
+                  outputPricePerMTokInr: savedModel.outputPricePerMTokInr,
+                  maxTokens: savedModel.maxTokens,
+                  temperature: savedModel.temperature,
+                  enabled: savedModel.enabled,
+                  keyLast4: savedModel.keyLast4 || undefined,
+                };
+
+                s.setModels((ms) => [...ms, formattedModel]);
+                s.toast(d.label.trim() + " added to database");
+                close();
+              } catch (err: any) {
+                s.toast(err.message || "Failed to add model");
+              }
             }}
             style={{ padding: "7px 13px", border: 0, borderRadius: "var(--r3)", background: "var(--green)", color: "var(--on-green)", fontSize: 13, fontWeight: 600, opacity: bad ? 0.5 : 1 }}
           >
