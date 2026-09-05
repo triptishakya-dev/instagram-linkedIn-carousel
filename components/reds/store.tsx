@@ -18,6 +18,7 @@ import type {
   ConfirmSpec,
   Goal,
   Model,
+  ModelRole,
   NewModelDraft,
   PickerSpec,
   Post,
@@ -333,6 +334,58 @@ export function RedsProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", onKey);
     };
+  }, []);
+
+  // ---- initial API data fetch ----
+  useEffect(() => {
+    fetch("/api/goals")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.goals && Array.isArray(data.goals)) {
+          setGoals(
+            data.goals.map((g: any) => ({
+              id: g.id,
+              name: g.name,
+              platforms: (g.platforms || []).map((p: string) => p.toLowerCase()),
+              brandLogoAssetId: g.brandLogoAssetId || "",
+              captionPrompt: g.captionPrompt || "",
+              imagePrompt: g.imagePrompt || "",
+              startDate: g.startDate,
+              endDate: g.endDate,
+              schedule: g.schedule || { cadence: "weekly", time: "09:30", weekdays: [], monthDay: 1 },
+              referenceAssetIds: g.referenceAssetIds || [],
+              imageAssetIds: g.imageAssetIds || [],
+              modelId: g.modelId || "",
+              status: (g.status || "ACTIVE").toLowerCase(),
+              createdAt: g.createdAt,
+              updatedAt: g.updatedAt,
+            })),
+          );
+        }
+      })
+      .catch(() => {});
+
+    fetch("/api/models")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.models && Array.isArray(data.models)) {
+          setModels(
+            data.models.map((m: any) => ({
+              id: m.id,
+              label: m.label,
+              provider: m.provider,
+              role: (m.role || "BOTH").toLowerCase() as ModelRole,
+              inputPricePerMTokInr: m.inputPricePerMTokInr,
+              outputPricePerMTokInr: m.outputPricePerMTokInr,
+              maxTokens: m.maxTokens,
+              temperature: m.temperature,
+              enabled: m.enabled,
+              keyLast4: m.keyLast4 || undefined,
+            })),
+          );
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // ---- toasts ----
