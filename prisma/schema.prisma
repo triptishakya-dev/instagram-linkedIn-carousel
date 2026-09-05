@@ -62,6 +62,12 @@ enum Cadence {
   MONTHLY
 }
 
+enum ModelRole {
+  CAPTION
+  SLIDES
+  BOTH
+}
+
 // ==========================================
 // Authentication & User Models (Auth.js)
 // ==========================================
@@ -78,6 +84,7 @@ model User {
   socialAccounts SocialAccount[]
   posts          Post[]
   goals          Goal[]
+  aiModels       AiModel[]
 
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -222,6 +229,29 @@ model Goal {
 
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
+}
+
+// ==========================================
+// AI Generation Models
+// ==========================================
+
+model AiModel {
+  id                    String    @id @default(cuid())
+  userId                String
+  label                 String
+  provider              String
+  role                  ModelRole @default(BOTH)
+  inputPricePerMTokInr  Float     @default(0)
+  outputPricePerMTokInr Float     @default(0)
+  maxTokens             Int       @default(4000)
+  temperature           Float     @default(0.7)
+  enabled               Boolean   @default(true)
+  keyLast4              String?
+
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 }
 
 model PostMedia {
