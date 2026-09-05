@@ -1,30 +1,43 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Sora } from "next/font/google";
 import "./globals.css";
+import { RedsProvider } from "@/components/reds/store";
+import { Shell } from "@/components/reds/Shell";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const sora = Sora({
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700"],
+  variable: "--font-sora",
 });
 
 export const metadata: Metadata = {
-  title: "Social Scheduler",
+  title: "REDS Content Ops",
   description:
-    "Schedule and publish image posts to Instagram Professional accounts and LinkedIn member profiles.",
+    "Goal-driven carousel generation, review and scheduling for Instagram and LinkedIn.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+// Paint the stored theme before first paint so the page never flashes the
+// wrong ground. Mirrors what the provider does on mount.
+const THEME_BOOT = `
+(function(){try{
+  var p = JSON.parse(localStorage.getItem('reds:prefs')||'null');
+  var t = (p && p.theme) || 'system';
+  var dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+}catch(e){}})();
+`;
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="en" className={sora.variable} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
+      </head>
+      <body>
+        <RedsProvider>
+          <Shell>{children}</Shell>
+        </RedsProvider>
+      </body>
     </html>
   );
 }
