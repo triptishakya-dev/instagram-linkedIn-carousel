@@ -49,6 +49,10 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
   const s = useReds();
   const [zoneHot, setZoneHot] = useState(false);
   const [dragAsset, setDragAsset] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [logoKey, setLogoKey] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
 
   const isNew = id === "new";
   const base = isNew ? null : s.goals.find((g) => g.id === id) || s.goals[0];
@@ -68,7 +72,26 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
   const endBad = !!endStr && endStr < startStr;
   const platBad = !d.platforms.length;
 
-  const logo = s.assetById(d.brandLogoAssetId) || s.assets.find((a) => a.kind === "logo");
+  const selectedLogo = s.assets.find((a) => a.id === d.brandLogoAssetId);
+  const displayLogoPreview = logoPreviewUrl || selectedLogo?.previewUrl;
+  const displayLogoName = selectedLogo
+    ? selectedLogo.name
+    : logoKey
+      ? "Uploaded to AWS S3"
+      : logoPreviewUrl
+        ? "Brand Logo Image"
+        : d.brandLogoAssetId
+          ? d.brandLogoAssetId
+          : "No logo selected";
+
+  const displayLogoSub = logoKey
+    ? logoKey
+    : selectedLogo
+      ? `${selectedLogo.width || 1080}×${selectedLogo.height || 1080} · ${selectedLogo.mimeType || "image/png"}`
+      : d.brandLogoAssetId
+        ? "Selected logo"
+        : "Add or select a brand logo";
+
   const model = s.modelById(d.modelId) || s.models[0];
   const cad = d.schedule.cadence;
   const count = cadenceCount(cad, startStr, endStr || null, d.schedule.weekdays);
@@ -107,7 +130,71 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
     s.toast(ids.length + (ids.length === 1 ? " image added" : " images added"));
   };
 
-  const saveDisabled = nameBad || endBad || platBad;
+  const uploadLogoToS3 = async (file: File) => {
+    const previewUrl = URL.createObjectURL(file);
+    setLogoPreviewUrl(previewUrl);
+
+    // Create local asset so it immediately displays and registers in store
+    const assetId = "AST-LOGO-" + Date.now();
+    const newLogoAsset: Asset = {
+      id: assetId,
+      name: file.name,
+      kind: "logo",
+      mimeType: file.type || "image/png",
+      sizeBytes: file.size,
+      width: 1080,
+      height: 1080,
+      tags: ["logo"],
+      usedInPostIds: [],
+      uploadedBy: CURRENT_USER,
+      uploadedAt: iso(Date.now()),
+      tint: "var(--green-tint)",
+      previewUrl,
+    };
+
+    s.setAssets((xs) => [newLogoAsset, ...xs]);
+    set({ brandLogoAssetId: assetId });
+
+    try {
+      setLogoUploading(true);
+      const presignRes = await fetch("/api/uploads/presign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: file.name,
+          contentType: file.type || "image/png",
+          sizeBytes: file.size,
+        }),
+      });
+
+      if (!presignRes.ok) {
+        const errData = await presignRes.json().catch(() => ({}));
+        throw new Error(errData.message || "Failed to get presigned upload URL.");
+      }
+
+      const { url, key } = await presignRes.json();
+
+      const putRes = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": file.type || "image/png" },
+        body: file,
+      });
+
+      if (!putRes.ok) {
+        throw new Error("Failed to upload image to S3.");
+      }
+
+      setLogoKey(key);
+      set({ brandLogoAssetId: key });
+      s.toast("Logo uploaded to AWS S3 successfully");
+    } catch (err: any) {
+      s.toast(err.message || "S3 upload completed locally");
+    } finally {
+      setLogoUploading(false);
+    }
+  };
+
+  const saveDisabled = nameBad || endBad || platBad || saving || logoUploading;
   const saveTitle = nameBad
     ? "Add a goal name to save."
     : platBad
@@ -138,238 +225,413 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
     { k: "linkedin", label: "LinkedIn", meta: "1.91:1 or 1:1, up to 20 slides" },
   ];
 
-  const save = () => {
+  const save = async () => {
     if (saveDisabled) { touch("name"); return; }
-    if (isNew) {
-      s.setGoals((gs) => [
-        ...gs,
-        { ...d, id: "GOL-" + String(gs.length + 1).padStart(2, "0"), createdAt: iso(Date.now()), updatedAt: iso(Date.now()) },
-      ]);
-    } else {
-      s.setGoals((gs) => gs.map((g) => (g.id === base!.id ? { ...g, ...d, updatedAt: iso(Date.now()) } : g)));
+    try {
+      setSaving(true);
+      const endpoint = isNew ? "/api/goals" : `/api/goals/${base!.id}`;
+      const method = isNew ? "POST" : "PUT";
+
+      const payload = {
+        name: d.name,
+        platforms: d.platforms.map((p) => p.toUpperCase()),
+        brandLogoAssetId: d.brandLogoAssetId || null,
+        logoKey: logoKey || null,
+        captionPrompt: d.captionPrompt || null,
+        imagePrompt: d.imagePrompt || null,
+        startDate: d.startDate,
+        endDate: d.endDate || null,
+        schedule: d.schedule,
+        referenceAssetIds: d.referenceAssetIds,
+        imageAssetIds: d.imageAssetIds,
+        modelId: d.modelId || null,
+        status: (d.status || "ACTIVE").toUpperCase(),
+      };
+
+      const res = await fetch(endpoint, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || "Failed to save goal.");
+      }
+
+      const savedGoal = await res.json();
+      const formattedSavedGoal: Goal = {
+        id: savedGoal.id,
+        name: savedGoal.name,
+        platforms: (savedGoal.platforms || []).map((p: string) => p.toLowerCase() as Platform),
+        brandLogoAssetId: savedGoal.brandLogoAssetId || "",
+        captionPrompt: savedGoal.captionPrompt || "",
+        imagePrompt: savedGoal.imagePrompt || "",
+        startDate: savedGoal.startDate,
+        endDate: savedGoal.endDate,
+        schedule: savedGoal.schedule || d.schedule,
+        referenceAssetIds: savedGoal.referenceAssetIds || [],
+        imageAssetIds: savedGoal.imageAssetIds || [],
+        modelId: savedGoal.modelId || "",
+        status: (savedGoal.status || "ACTIVE").toLowerCase() as Goal["status"],
+        createdAt: savedGoal.createdAt,
+        updatedAt: savedGoal.updatedAt,
+      };
+
+      if (isNew) {
+        s.setGoals((gs) => [formattedSavedGoal, ...gs]);
+      } else {
+        s.setGoals((gs) => gs.map((g) => (g.id === base!.id ? formattedSavedGoal : g)));
+      }
+
+      s.setGoalDraft(null);
+      s.setGoalTouched({});
+      s.toast("Goal saved to database");
+      s.go("/goals");
+    } catch (err: any) {
+      s.toast(err.message || "Failed to save goal");
+    } finally {
+      setSaving(false);
     }
-    s.setGoalDraft(null);
-    s.setGoalTouched({});
-    s.toast("Goal saved");
-    s.go("/goals");
   };
+
+  const [logoModalOpen, setLogoModalOpen] = useState(false);
 
   return (
     <>
-      <div style={{ maxWidth: 640, display: "flex", flexDirection: "column", gap: 34, paddingBottom: 24 }}>
-        {/* ---- identity ---- */}
-        <section>
-          <h2 style={H2}>Identity</h2>
-          <p style={SUB}>Name the standing intent, not the individual post.</p>
-          <label style={LBL}>Goal name</label>
-          <input
-            value={d.name}
-            onChange={(e) => set({ name: e.target.value })}
-            onBlur={() => touch("name")}
-            aria-invalid={nameBad}
-            style={{ width: "100%", padding: "9px 11px", border: `1px solid ${nameShow ? "var(--red)" : "var(--border)"}`, borderRadius: "var(--r3)", background: "var(--surface)", fontSize: 14 }}
-          />
-          {nameShow ? (
-            <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--red)" }}>
-              A goal needs a name — it labels every post it produces.
-            </p>
-          ) : null}
+      {logoModalOpen ? (
+        <div role="dialog" aria-label="Add Brand Logo" style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(33,33,33,.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r5)", boxShadow: "var(--shadow)", width: "min(560px, 94vw)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+              <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Add Brand Logo</h2>
+              <span style={{ flex: "1 1 auto" }} />
+              <button type="button" onClick={() => setLogoModalOpen(false)} style={{ border: 0, background: "transparent", color: "var(--fg2)", fontSize: 14, cursor: "pointer" }}>
+                ✕
+              </button>
+            </div>
 
-          <div style={{ marginTop: 18 }}>
-            <label style={LBL}>Brand logo</label>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 10, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)" }}>
-              <span aria-hidden style={{ width: 40, height: 40, borderRadius: "var(--r2)", border: "1px solid var(--border-strong)", background: logo?.tint || "var(--n100)" }} />
-              <span style={{ flex: "1 1 auto", minWidth: 0 }}>
-                <span style={{ display: "block", fontSize: 13 }}>{logo?.name || "No logo selected"}</span>
-                <span style={{ display: "block", fontSize: 12, color: "var(--fg2)" }}>
-                  {logo ? `${logo.width}×${logo.height} · ${logo.mimeType}` : "Pick a logo asset"}
-                </span>
-              </span>
-              <button
-                type="button"
-                onClick={() => { s.setGoalDraft(d); s.setPicker({ kind: "logo", field: "brandLogoAssetId", multi: false }); }}
-                style={{ padding: "5px 11px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 12 }}
-              >
-                Change
+            <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 20 }}>
+              {/* S3 File Upload Option */}
+              <div style={{ padding: 16, border: "2px dashed var(--border)", borderRadius: "var(--r3)", background: "var(--surface2)", textAlign: "center" }}>
+                <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 500 }}>Upload logo file directly to AWS S3</p>
+                <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--fg2)" }}>Supports PNG, JPG, or WEBP up to 25MB.</p>
+                <label style={{ display: "inline-block", padding: "8px 16px", border: "1px solid var(--green-line)", borderRadius: "var(--r3)", background: "var(--green)", color: "var(--on-green)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                  {logoUploading ? "Uploading to S3..." : "Choose File to Upload"}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    style={{ display: "none" }}
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0];
+                      if (f) {
+                        await uploadLogoToS3(f);
+                        setLogoModalOpen(false);
+                      }
+                    }}
+                  />
+                </label>
+              </div>
+
+              {/* Select Existing Logo Option */}
+              <div>
+                <h3 style={{ margin: "0 0 10px", fontSize: 13, fontWeight: 600, color: "var(--fg2)" }}>Or select from asset library</h3>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 10, maxHeight: 180, overflowY: "auto" }}>
+                  {s.assets.filter((a) => a.kind === "logo" || a.kind === "image").map((a) => {
+                    const isSelected = d.brandLogoAssetId === a.id;
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        onClick={() => {
+                          set({ brandLogoAssetId: a.id });
+                          setLogoKey(null);
+                          setLogoPreviewUrl(a.previewUrl || null);
+                          setLogoModalOpen(false);
+                          s.toast("Selected " + a.name);
+                        }}
+                        style={{ display: "flex", flexDirection: "column", gap: 6, padding: 8, border: `1px solid ${isSelected ? "var(--green-line)" : "var(--border)"}`, borderRadius: "var(--r3)", background: isSelected ? "var(--green-tint)" : "var(--surface)", textAlign: "left", cursor: "pointer" }}
+                      >
+                        <span aria-hidden style={{ width: "100%", aspectRatio: "1 / 1", borderRadius: "var(--r2)", background: a.tint, overflow: "hidden" }}>
+                          {a.previewUrl ? <img src={a.previewUrl} alt={a.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : null}
+                        </span>
+                        <span style={{ fontSize: 11, color: "var(--fg)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                      </button>
+                    );
+                  })}
+                  {s.assets.filter((a) => a.kind === "logo" || a.kind === "image").length === 0 ? (
+                    <p style={{ fontSize: 12, color: "var(--fg2)", margin: 0, gridColumn: "1 / -1" }}>No logo assets in library yet. Upload one above!</p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "12px 18px", borderTop: "1px solid var(--border)", background: "var(--bg)" }}>
+              <button type="button" onClick={() => setLogoModalOpen(false)} style={{ padding: "7px 14px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 13 }}>
+                Close
               </button>
             </div>
           </div>
+        </div>
+      ) : null}
+
+      <div style={{ maxWidth: 1040, width: "100%", display: "flex", flexDirection: "column", gap: 34, paddingBottom: 24 }}>
+        {/* ---- identity section (2 columns on desktop) ---- */}
+        <section>
+          <h2 style={H2}>Identity</h2>
+          <p style={SUB}>Name the standing intent, not the individual post.</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 24, alignItems: "start" }}>
+            <div>
+              <label style={LBL}>Goal name</label>
+              <input
+                value={d.name}
+                onChange={(e) => set({ name: e.target.value })}
+                onBlur={() => touch("name")}
+                aria-invalid={nameBad}
+                placeholder="e.g. Weekly Tech Insights"
+                style={{ width: "100%", padding: "9px 11px", border: `1px solid ${nameShow ? "var(--red)" : "var(--border)"}`, borderRadius: "var(--r3)", background: "var(--surface)", fontSize: 14 }}
+              />
+              {nameShow ? (
+                <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--red)" }}>
+                  A goal needs a name — it labels every post it produces.
+                </p>
+              ) : null}
+            </div>
+
+            <div>
+              <label style={LBL}>Brand logo</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 10, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)" }}>
+                {displayLogoPreview ? (
+                  <img src={displayLogoPreview} alt="Logo preview" style={{ width: 40, height: 40, borderRadius: "var(--r2)", objectFit: "cover" }} />
+                ) : (
+                  <span aria-hidden style={{ width: 40, height: 40, borderRadius: "var(--r2)", border: "1px solid var(--border-strong)", background: selectedLogo?.tint || "var(--n100)" }} />
+                )}
+                <span style={{ flex: "1 1 auto", minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {logoUploading ? "Uploading to AWS S3..." : displayLogoName}
+                  </span>
+                  <span style={{ display: "block", fontSize: 12, color: "var(--fg2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {displayLogoSub}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setLogoModalOpen(true)}
+                  style={{ padding: "6px 14px", border: "1px solid var(--green-line)", borderRadius: "var(--r3)", background: "var(--green)", color: "var(--on-green)", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+                >
+                  Add Logo
+                </button>
+              </div>
+            </div>
+          </div>
         </section>
 
-        {/* ---- prompts ---- */}
+        {/* ---- prompts section (2 columns on desktop) ---- */}
         <section>
           <h2 style={H2}>Prompts</h2>
           <p style={SUB}>Two prompts, two jobs. Neither one generates imagery.</p>
-          {prompts.map((p) => (
-            <div key={p.label} style={{ marginBottom: 20 }}>
-              <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{p.label}</label>
-              <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg2)" }}>{p.help}</p>
-              <textarea
-                value={p.value}
-                onChange={(e) => p.set(e.target.value)}
-                rows={5}
-                aria-label={p.label}
-                style={{ width: "100%", padding: 10, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface2)", color: "var(--fg)", fontFamily: MONO, fontSize: 12, lineHeight: 1.5, resize: "vertical" }}
-              />
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6 }}>
-                <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--fg3)" }}>{p.value.length} characters</span>
-                <span style={{ flex: "1 1 auto" }} />
-                <details>
-                  <summary style={{ fontSize: 12, color: "var(--green-text)", cursor: "pointer" }}>Prompt tips</summary>
-                  <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--fg2)", lineHeight: 1.5 }}>{p.tips}</p>
-                </details>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 24, alignItems: "start" }}>
+            {prompts.map((p) => (
+              <div key={p.label}>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{p.label}</label>
+                <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg2)" }}>{p.help}</p>
+                <textarea
+                  value={p.value}
+                  onChange={(e) => p.set(e.target.value)}
+                  rows={5}
+                  aria-label={p.label}
+                  style={{ width: "100%", padding: 10, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface2)", color: "var(--fg)", fontFamily: MONO, fontSize: 12, lineHeight: 1.5, resize: "vertical" }}
+                />
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6 }}>
+                  <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--fg3)" }}>{p.value.length} characters</span>
+                  <span style={{ flex: "1 1 auto" }} />
+                  <details>
+                    <summary style={{ fontSize: 12, color: "var(--green-text)", cursor: "pointer" }}>Prompt tips</summary>
+                    <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--fg2)", lineHeight: 1.5 }}>{p.tips}</p>
+                  </details>
+                </div>
               </div>
-            </div>
-          ))}
-        </section>
-
-        {/* ---- platforms ---- */}
-        <section>
-          <h2 style={{ ...H2, marginBottom: 14 }}>Platforms</h2>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {platforms.map((p) => {
-              const on = d.platforms.includes(p.k);
-              return (
-                <label key={p.k} style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, border: `1px solid ${on ? "var(--green-line)" : "var(--border)"}`, borderRadius: "var(--r3)", background: on ? "var(--green-tint)" : "var(--surface)" }}>
-                  <input
-                    type="checkbox"
-                    checked={on}
-                    onChange={() => set({ platforms: on ? d.platforms.filter((x) => x !== p.k) : [...d.platforms, p.k] })}
-                    style={{ accentColor: "var(--green-line)" }}
-                  />
-                  <span style={{ flex: "1 1 auto" }}>
-                    <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{p.label}</span>
-                    <span style={{ display: "block", fontSize: 12, color: "var(--fg2)" }}>{p.meta}</span>
-                  </span>
-                </label>
-              );
-            })}
+            ))}
           </div>
-          {platBad ? <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--red)" }}>Pick at least one platform.</p> : null}
-          {d.platforms.length > 1 ? (
-            <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--fg2)" }}>
-              Slides are composed twice, once per ratio — the cost estimate doubles.
-            </p>
-          ) : null}
         </section>
 
-        {/* ---- window ---- */}
-        <section>
-          <h2 style={{ ...H2, marginBottom: 14 }}>Window</h2>
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div>
-              <label style={LBL}>Start date</label>
-              <input type="date" value={startStr} onChange={(e) => set({ startDate: e.target.value })} style={INPUT} />
+        {/* ---- platforms & model section (2 columns on desktop) ---- */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 24, alignItems: "start" }}>
+          {/* Platforms */}
+          <section>
+            <h2 style={{ ...H2, marginBottom: 14 }}>Platforms</h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {platforms.map((p) => {
+                const on = d.platforms.includes(p.k);
+                return (
+                  <label key={p.k} style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, border: `1px solid ${on ? "var(--green-line)" : "var(--border)"}`, borderRadius: "var(--r3)", background: on ? "var(--green-tint)" : "var(--surface)", cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => set({ platforms: on ? d.platforms.filter((x) => x !== p.k) : [...d.platforms, p.k] })}
+                      style={{ accentColor: "var(--green-line)" }}
+                    />
+                    <span style={{ flex: "1 1 auto" }}>
+                      <span style={{ display: "block", fontSize: 13, fontWeight: 500 }}>{p.label}</span>
+                      <span style={{ display: "block", fontSize: 12, color: "var(--fg2)" }}>{p.meta}</span>
+                    </span>
+                  </label>
+                );
+              })}
             </div>
-            <div>
-              <label style={LBL}>End date</label>
-              <input
-                type="date"
-                value={endStr}
-                onChange={(e) => set({ endDate: e.target.value })}
-                disabled={!endStr}
-                style={{ ...INPUT, border: `1px solid ${endBad ? "var(--red)" : "var(--border)"}`, opacity: endStr ? 1 : 0.5 }}
-              />
-              <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13, color: "var(--fg2)" }}>
+            {platBad ? <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--red)" }}>Pick at least one platform.</p> : null}
+          </section>
+
+          {/* Model selection */}
+          <section>
+            <h2 style={{ ...H2, marginBottom: 14 }}>Model</h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 14, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)" }}>
+              <label style={LBL}>AI Generation Model</label>
+              <select value={d.modelId} onChange={(e) => set({ modelId: e.target.value })} aria-label="Model" style={{ ...INPUT, width: "100%" }}>
+                <option value="">Select a model</option>
+                {s.models.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+              {s.models.length === 0 ? (
+                <button
+                  type="button"
+                  onClick={() => s.go("/accounts")}
+                  style={{ border: 0, background: "transparent", padding: 0, fontSize: 13, color: "var(--green-text)", textAlign: "left" }}
+                >
+                  No models configured — add one in Accounts
+                </button>
+              ) : (
+                <span style={{ fontSize: 12, color: "var(--fg2)" }}>
+                  Estimated cost: {inr(perPost)} per post{d.platforms.length > 1 ? " across both platforms" : ""}
+                </span>
+              )}
+            </div>
+          </section>
+        </div>
+
+        {/* ---- window & schedule section (2 columns on desktop) ---- */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 24, alignItems: "start" }}>
+          {/* Window */}
+          <section>
+            <h2 style={{ ...H2, marginBottom: 14 }}>Window</h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={LBL}>Start date</label>
+                  <input type="date" value={startStr} onChange={(e) => set({ startDate: e.target.value })} style={{ ...INPUT, width: "100%" }} />
+                </div>
+                <div>
+                  <label style={LBL}>End date</label>
+                  <input
+                    type="date"
+                    value={endStr}
+                    onChange={(e) => set({ endDate: e.target.value })}
+                    disabled={!endStr}
+                    style={{ ...INPUT, width: "100%", border: `1px solid ${endBad ? "var(--red)" : "var(--border)"}`, opacity: endStr ? 1 : 0.5 }}
+                  />
+                </div>
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--fg2)", cursor: "pointer" }}>
                 <input
                   type="checkbox"
                   checked={!endStr}
                   onChange={() => set({ endDate: endStr ? null : iso(new Date(startStr).getTime() + 60 * DAY) })}
                   style={{ accentColor: "var(--green-line)" }}
                 />
-                Runs until paused
+                Runs until paused (no end date)
               </label>
-              {endBad ? <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--red)" }}>The end date falls before the start date.</p> : null}
-            </div>
-            <div style={{ padding: "12px 14px", border: "1px solid var(--green-tint2)", borderRadius: "var(--r3)", background: "var(--green-tint)" }}>
-              <span style={{ fontSize: 24, lineHeight: 1.35, fontWeight: 500, color: "var(--green-text)", fontVariantNumeric: "tabular-nums" }}>
-                {count.n} {count.n === 1 ? "post" : "posts"}
-              </span>
-              <span style={{ display: "block", fontSize: 12, color: "var(--fg2)", marginTop: 2 }}>
-                {count.open
-                  ? "over the next 90 days at this cadence — the window runs until paused"
-                  : `across the ${count.days}-day window at this cadence`}
-              </span>
-            </div>
-          </div>
-        </section>
+              {endBad ? <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--red)" }}>The end date falls before the start date.</p> : null}
 
-        {/* ---- schedule ---- */}
-        <section>
-          <h2 style={{ ...H2, marginBottom: 14 }}>Schedule</h2>
-          <div role="group" aria-label="Cadence" style={{ display: "flex", gap: 2, padding: 2, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface2)" }}>
-            {CADS.map((c) => {
-              const on = cad === c.k;
-              const t = seg(on);
-              return (
-                <button key={c.k} type="button" aria-pressed={on} onClick={() => set({ schedule: { ...d.schedule, cadence: c.k } })} style={{ flex: "1 1 0", border: 0, borderRadius: "var(--r2)", padding: "6px 8px", fontSize: 12, background: t.bg, color: t.fg }}>
-                  {c.label}
-                </button>
-              );
-            })}
-          </div>
-
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 14, marginTop: 16 }}>
-            <div>
-              <label style={LBL}>Time</label>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input type="time" value={d.schedule.time} onChange={(e) => set({ schedule: { ...d.schedule, time: e.target.value } })} style={INPUT} />
-                <span style={{ fontSize: 12, color: "var(--fg2)" }}>IST (UTC+5:30)</span>
+              <div style={{ padding: "12px 14px", border: "1px solid var(--green-tint2)", borderRadius: "var(--r3)", background: "var(--green-tint)" }}>
+                <span style={{ fontSize: 24, lineHeight: 1.35, fontWeight: 500, color: "var(--green-text)", fontVariantNumeric: "tabular-nums" }}>
+                  {count.n} {count.n === 1 ? "post" : "posts"}
+                </span>
+                <span style={{ display: "block", fontSize: 12, color: "var(--fg2)", marginTop: 2 }}>
+                  {count.open
+                    ? "over the next 90 days at this cadence — runs until paused"
+                    : `across the ${count.days}-day window at this cadence`}
+                </span>
               </div>
             </div>
-            {cad === "alternate" ? (
+          </section>
+
+          {/* Schedule */}
+          <section>
+            <h2 style={{ ...H2, marginBottom: 14 }}>Schedule</h2>
+            <label style={LBL}>Cadence</label>
+            <div role="group" aria-label="Cadence" style={{ display: "flex", gap: 2, padding: 2, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface2)" }}>
+              {CADS.map((c) => {
+                const on = cad === c.k;
+                const t = seg(on);
+                return (
+                  <button key={c.k} type="button" aria-pressed={on} onClick={() => set({ schedule: { ...d.schedule, cadence: c.k } })} style={{ flex: "1 1 0", border: 0, borderRadius: "var(--r2)", padding: "6px 8px", fontSize: 12, background: t.bg, color: t.fg, cursor: "pointer" }}>
+                    {c.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 14, marginTop: 16 }}>
               <div>
-                <label style={LBL}>Starting on</label>
-                <input type="date" value={startStr} onChange={(e) => set({ startDate: e.target.value })} style={INPUT} />
+                <label style={LBL}>Time (IST)</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="time" value={d.schedule.time} onChange={(e) => set({ schedule: { ...d.schedule, time: e.target.value } })} style={INPUT} />
+                  <span style={{ fontSize: 12, color: "var(--fg2)" }}>UTC+5:30</span>
+                </div>
               </div>
-            ) : null}
-          </div>
-
-          {cad === "weekly" ? (
-            <div style={{ marginTop: 16 }}>
-              <label style={LBL}>Weekdays</label>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {DOW.map((w, i) => {
-                  const on = (d.schedule.weekdays || []).includes(i);
-                  const c = chip(on);
-                  return (
-                    <button
-                      key={w}
-                      type="button"
-                      aria-pressed={on}
-                      onClick={() => set({ schedule: { ...d.schedule, weekdays: on ? d.schedule.weekdays.filter((x) => x !== i) : [...(d.schedule.weekdays || []), i] } })}
-                      style={{ width: 44, padding: "6px 0", border: `1px solid ${c.br}`, borderRadius: "var(--r3)", background: c.bg, color: c.fg, fontSize: 12 }}
-                    >
-                      {w}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-
-          {cad === "monthly" ? (
-            <div style={{ marginTop: 16 }}>
-              <label style={LBL}>Day of month</label>
-              <select
-                value={String(d.schedule.monthDay || 1)}
-                onChange={(e) => set({ schedule: { ...d.schedule, monthDay: Number(e.target.value) } })}
-                aria-label="Day of month"
-                style={INPUT}
-              >
-                {Array.from({ length: 31 }, (_, i) => (
-                  <option key={i} value={String(i + 1)}>{i + 1}</option>
-                ))}
-              </select>
-              {(d.schedule.monthDay || 1) > 28 ? (
-                <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--amber)" }}>
-                  Months without day {d.schedule.monthDay} run on their last day instead.
-                </p>
+              {cad === "alternate" ? (
+                <div>
+                  <label style={LBL}>Starting date</label>
+                  <input type="date" value={startStr} onChange={(e) => set({ startDate: e.target.value })} style={INPUT} />
+                </div>
               ) : null}
             </div>
-          ) : null}
-        </section>
 
+            {cad === "weekly" ? (
+              <div style={{ marginTop: 16 }}>
+                <label style={LBL}>Weekdays</label>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {DOW.map((w, i) => {
+                    const on = (d.schedule.weekdays || []).includes(i);
+                    const c = chip(on);
+                    return (
+                      <button
+                        key={w}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => set({ schedule: { ...d.schedule, weekdays: on ? d.schedule.weekdays.filter((x) => x !== i) : [...(d.schedule.weekdays || []), i] } })}
+                        style={{ width: 44, padding: "6px 0", border: `1px solid ${c.br}`, borderRadius: "var(--r3)", background: c.bg, color: c.fg, fontSize: 12, cursor: "pointer" }}
+                      >
+                        {w}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {cad === "monthly" ? (
+              <div style={{ marginTop: 16 }}>
+                <label style={LBL}>Day of month</label>
+                <select
+                  value={String(d.schedule.monthDay || 1)}
+                  onChange={(e) => set({ schedule: { ...d.schedule, monthDay: Number(e.target.value) } })}
+                  aria-label="Day of month"
+                  style={INPUT}
+                >
+                  {Array.from({ length: 31 }, (_, i) => (
+                    <option key={i} value={String(i + 1)}>{i + 1}</option>
+                  ))}
+                </select>
+                {(d.schedule.monthDay || 1) > 28 ? (
+                  <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--amber)" }}>
+                    Months without day {d.schedule.monthDay} run on their last day instead.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        </div>
         {/* ---- reference assets ---- */}
         <section>
           <h2 style={H2}>Reference assets</h2>
@@ -388,7 +650,7 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
                     type="button"
                     aria-label={"Remove " + (a?.name || rid)}
                     onClick={() => set({ referenceAssetIds: d.referenceAssetIds.filter((x) => x !== rid) })}
-                    style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg3)", fontSize: 11, lineHeight: 1, padding: 0 }}
+                    style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", border: "1px solid var(--border)", background: "var(--surface)", color: "var(--fg3)", fontSize: 11, lineHeight: 1, padding: 0, cursor: "pointer" }}
                   >
                     ×
                   </button>
@@ -398,7 +660,7 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
             <button
               type="button"
               onClick={() => { s.setGoalDraft(d); s.setPicker({ kind: "any", field: "referenceAssetIds", multi: true }); }}
-              style={{ width: 74, height: 74, border: "1px dashed var(--border-strong)", borderRadius: "var(--r3)", background: "transparent", color: "var(--fg3)", fontSize: 12 }}
+              style={{ width: 74, height: 74, border: "1px dashed var(--border-strong)", borderRadius: "var(--r3)", background: "transparent", color: "var(--fg3)", fontSize: 12, cursor: "pointer" }}
             >
               Add
             </button>
@@ -424,7 +686,7 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
               <button
                 type="button"
                 onClick={() => { s.setGoalDraft(d); s.setPicker({ kind: "image", field: "imageAssetIds", multi: true }); }}
-                style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 12 }}
+                style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 12, cursor: "pointer" }}
               >
                 Choose from library
               </button>
@@ -469,7 +731,7 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
                     type="button"
                     aria-label={"Remove " + a.name}
                     onClick={() => set({ imageAssetIds: d.imageAssetIds.filter((x) => x !== aid) })}
-                    style={{ border: "1px solid var(--border)", borderRadius: "var(--r2)", background: "var(--surface)", color: "var(--fg3)", fontSize: 11, padding: "3px 8px" }}
+                    style={{ border: "1px solid var(--border)", borderRadius: "var(--r2)", background: "var(--surface)", color: "var(--fg3)", fontSize: 11, padding: "3px 8px", cursor: "pointer" }}
                   >
                     Remove
                   </button>
@@ -478,39 +740,13 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
             })}
           </ul>
         </section>
-
-        {/* ---- model ---- */}
-        <section>
-          <h2 style={{ ...H2, marginBottom: 14 }}>Model</h2>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
-            <select value={d.modelId} onChange={(e) => set({ modelId: e.target.value })} aria-label="Model" style={INPUT}>
-              <option value="">Select a model</option>
-              {s.models.map((m) => (
-                <option key={m.id} value={m.id}>{m.label}</option>
-              ))}
-            </select>
-            {s.models.length === 0 ? (
-              <button
-                type="button"
-                onClick={() => s.go("/accounts")}
-                style={{ border: 0, background: "transparent", padding: 0, fontSize: 13, color: "var(--green-text)" }}
-              >
-                No models configured — add one in Accounts
-              </button>
-            ) : (
-              <span style={{ fontSize: 13, color: "var(--fg2)" }}>
-                est. {inr(perPost)} per post{d.platforms.length > 1 ? " across both ratios" : ""}
-              </span>
-            )}
-          </div>
-        </section>
       </div>
 
-      <div style={{ position: "sticky", bottom: 0, display: "flex", alignItems: "center", gap: 12, maxWidth: 640, padding: "14px 0", background: "var(--bg)", borderTop: "1px solid var(--border)" }}>
+      <div style={{ position: "sticky", bottom: 0, display: "flex", alignItems: "center", gap: 12, maxWidth: 1040, width: "100%", padding: "14px 0", background: "var(--bg)", borderTop: "1px solid var(--border)", zIndex: 10 }}>
         <button
           type="button"
           onClick={() => { s.setGoalDraft(null); s.setGoalTouched({}); s.go("/goals"); }}
-          style={{ padding: "8px 14px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 13 }}
+          style={{ padding: "8px 16px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 13, cursor: "pointer" }}
         >
           Cancel
         </button>
@@ -519,9 +755,9 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
           onClick={save}
           title={saveTitle}
           aria-disabled={saveDisabled}
-          style={{ padding: "8px 14px", border: 0, borderRadius: "var(--r3)", background: "var(--green)", color: "var(--on-green)", fontSize: 13, fontWeight: 600, opacity: saveDisabled ? 0.5 : 1 }}
+          style={{ padding: "8px 20px", border: 0, borderRadius: "var(--r3)", background: "var(--green)", color: "var(--on-green)", fontSize: 13, fontWeight: 600, opacity: saveDisabled ? 0.5 : 1, cursor: saveDisabled ? "not-allowed" : "pointer" }}
         >
-          Save goal
+          {saving ? "Saving..." : "Save goal"}
         </button>
         <span style={{ fontSize: 12, color: "var(--fg2)" }}>{saveTitle}</span>
       </div>
