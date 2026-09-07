@@ -5,6 +5,7 @@ import { uploadAsset, type AssetRecord } from "@/lib/api-client";
 import { blankGoal } from "@/lib/reds/data";
 import { DAY, DOW, MONO, inr, iso } from "@/lib/reds/format";
 import { toRedsAsset } from "@/lib/reds/map";
+import { MAX_PROMPT_CHARS, promptTooLongMessage } from "@/lib/validation/prompt";
 import { chip, seg, useReds } from "../store";
 import type { Asset, Cadence, Goal, Platform } from "@/lib/reds/types";
 
@@ -65,6 +66,10 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
 
   const set = (patch: Partial<Goal>) => s.setGoalDraft({ ...d, ...patch });
   const touch = (k: string) => s.setGoalTouched((x) => ({ ...x, [k]: true }));
+
+  const captionPromptBad = (d.captionPrompt || "").length > MAX_PROMPT_CHARS;
+  const imagePromptBad = (d.imagePrompt || "").length > MAX_PROMPT_CHARS;
+  const promptBad = captionPromptBad || imagePromptBad;
 
   const nameBad = !d.name || !d.name.trim();
   const nameShow = nameBad && s.goalTouched.name;
@@ -160,20 +165,25 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
     }
   };
 
-  const saveDisabled = nameBad || endBad || platBad || saving || logoUploading;
+  const saveDisabled = nameBad || endBad || platBad || promptBad || saving || logoUploading;
   const saveTitle = nameBad
     ? "Add a goal name to save."
     : platBad
       ? "Pick at least one platform to save."
       : endBad
         ? "Fix the window — the end date is before the start."
-        : `Saves ${count.n} scheduled posts at ${d.schedule.time} IST.`;
+        : imagePromptBad
+          ? promptTooLongMessage("Image prompt")
+          : captionPromptBad
+            ? promptTooLongMessage("Caption prompt")
+            : `Saves ${count.n} scheduled posts at ${d.schedule.time} IST.`;
 
   const prompts = [
     {
       label: "Caption prompt",
       help: "Instructions for post copy and hashtags. Variables: {goalName}, {brandVoice}, {assetTags}.",
       value: d.captionPrompt,
+      over: captionPromptBad,
       set: (v: string) => set({ captionPrompt: v }),
       tips: "Name the constraint first. Ask for one number, not three. Cap the hashtag count in the prompt itself — the model over-tags when left open.",
     },
@@ -181,6 +191,7 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
       label: "Image prompt",
       help: "Drives layout and typography of composed slides using the selected assets. It does not generate imagery.",
       value: d.imagePrompt,
+      over: imagePromptBad,
       set: (v: string) => set({ imagePrompt: v }),
       tips: "Say how many slides, which layout per position, and where the asset sits. Reference the type steps by size so headlines stay inside the safe area.",
     },
@@ -403,16 +414,26 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
                   onChange={(e) => p.set(e.target.value)}
                   rows={5}
                   aria-label={p.label}
-                  style={{ width: "100%", padding: 10, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface2)", color: "var(--fg)", fontFamily: MONO, fontSize: 12, lineHeight: 1.5, resize: "vertical" }}
+                  aria-invalid={p.over}
+                  style={{ width: "100%", padding: 10, border: `1px solid ${p.over ? "var(--red-br)" : "var(--border)"}`, borderRadius: "var(--r3)", background: "var(--surface2)", color: "var(--fg)", fontFamily: MONO, fontSize: 12, lineHeight: 1.5, resize: "vertical" }}
                 />
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6 }}>
-                  <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--fg3)" }}>{p.value.length} characters</span>
+                  {/* The ceiling is shown alongside the count, so a long brief
+                      hits a visible budget rather than a rejection on save. */}
+                  <span style={{ fontFamily: MONO, fontSize: 11, color: p.over ? "var(--red)" : "var(--fg3)" }}>
+                    {p.value.length.toLocaleString("en-US")} / {MAX_PROMPT_CHARS.toLocaleString("en-US")} characters
+                  </span>
                   <span style={{ flex: "1 1 auto" }} />
                   <details>
                     <summary style={{ fontSize: 12, color: "var(--green-text)", cursor: "pointer" }}>Prompt tips</summary>
                     <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--fg2)", lineHeight: 1.5 }}>{p.tips}</p>
                   </details>
                 </div>
+                {p.over ? (
+                  <p role="alert" style={{ margin: "6px 0 0", fontSize: 12, color: "var(--red)" }}>
+                    {promptTooLongMessage(p.label)}
+                  </p>
+                ) : null}
               </div>
             ))}
           </div>
