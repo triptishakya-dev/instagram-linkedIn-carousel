@@ -1,8 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ApiClientError,
+  blockingGoalsOf,
+  deleteModel,
+  listModels,
+  updateModel,
+  type BlockingGoal,
+  type DeleteModelResult,
+} from "@/lib/api-client";
 import { PILL } from "@/lib/reds/data";
 import { MONO, absDT, inr, num } from "@/lib/reds/format";
+import { toModelWirePatch, toRedsModel } from "@/lib/reds/map";
 import { EmptyState } from "../charts";
 import { seg, useReds } from "../store";
 import type { Model, ModelRole, Platform } from "@/lib/reds/types";
@@ -38,50 +48,142 @@ export function Accounts() {
   // Populated by OAuth; nothing is connected until the user authorises.
   const [connections] = useState<Connection[]>([]);
 
+  /**
+   * Deletes in flight, so a card can show its own progress.
+   *
+   * The ref is what actually guards against a double submit: the confirm
+   * dialog stays open until the request lands, and a second click would
+   * arrive before a state update could disable anything.
+   */
+  const deletingRef = useRef<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState<Record<string, boolean>>({});
+
   useEffect(() => {
-    fetch("/api/models")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.models && Array.isArray(data.models)) {
-          s.setModels(
-            data.models.map((m: any) => ({
-              id: m.id,
-              label: m.label,
-              provider: m.provider,
-              role: (m.role || "BOTH").toLowerCase() as ModelRole,
-              inputPricePerMTokInr: m.inputPricePerMTokInr,
-              outputPricePerMTokInr: m.outputPricePerMTokInr,
-              maxTokens: m.maxTokens,
-              temperature: m.temperature,
-              enabled: m.enabled,
-              keyLast4: m.keyLast4 || undefined,
-            })),
-          );
-        }
-      })
-      .catch(() => {});
+    const ac = new AbortController();
+
+    listModels(ac.signal)
+      .then((rows) => s.setModels(rows.map(toRedsModel)))
+      .catch(() => {
+        /* the provider's own fetch already populated this; keep what is shown */
+      });
+
+    return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const setVal = <K extends keyof Model>(id: string, k: K, v: Model[K]) => {
     s.setModels((ms) => ms.map((m) => (m.id === id ? { ...m, [k]: v } : m)));
 
-    // Sync field change to PostgreSQL database
-    const payloadKey =
-      k === "inputPricePerMTokInr"
-        ? "inputPricePerMTokInr"
-        : k === "outputPricePerMTokInr"
-          ? "outputPricePerMTokInr"
-          : k === "role"
-            ? "role"
-            : k;
+    updateModel(id, toModelWirePatch({ [k]: v } as Partial<Model>)).catch(() => {
+      /* the next edit retries; a field on screen is not worth a modal */
+    });
+  };
 
-    const payloadValue = k === "role" ? (v as string).toUpperCase() : v;
+  /**
+   * Drops every local reference to a model the server has just deleted.
+   *
+   * The settings copy matters beyond tidiness: the provider saves the whole
+   * settings blob back on any change, so a default left naming a deleted id
+   * here would be written over the server's cleared value on the next edit.
+   */
+  const forgetModel = (id: string) => {
+    s.setModels((ms) => ms.filter((m) => m.id !== id));
+    s.setGoals((gs) => gs.map((g) => (g.modelId === id ? { ...g, modelId: "" } : g)));
+    s.setSettings((st) => ({
+      ...st,
+      defCaptionModel: st.defCaptionModel === id ? "" : st.defCaptionModel,
+      defSlideModel: st.defSlideModel === id ? "" : st.defSlideModel,
+    }));
+    setRoleDefaults((rd) => ({
+      caption: rd.caption === id ? "" : rd.caption,
+      slides: rd.slides === id ? "" : rd.slides,
+      both: rd.both === id ? "" : rd.both,
+    }));
+  };
 
-    fetch(`/api/models/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [payloadKey]: payloadValue }),
-    }).catch(() => {});
+  const deleteSummary = (m: Model, r: DeleteModelResult) => {
+    const also: string[] = [];
+    if (r.clearedGoalCount > 0) {
+      also.push(`cleared from ${r.clearedGoalCount} goal${r.clearedGoalCount === 1 ? "" : "s"}`);
+    }
+    if (r.clearedDefaults.length > 0) {
+      const n = r.clearedDefaults.length;
+      also.push(`${n} workspace default${n === 1 ? "" : "s"} reset`);
+    }
+    return also.length ? `${m.label} deleted — ${also.join(", ")}` : `${m.label} deleted`;
+  };
+
+  const runDelete = async (m: Model, force: boolean) => {
+    if (deletingRef.current.has(m.id)) return;
+    deletingRef.current.add(m.id);
+    setDeleting((d) => ({ ...d, [m.id]: true }));
+
+    try {
+      const result = await deleteModel(m.id, { force });
+      s.ask(null);
+      forgetModel(m.id);
+      s.toast(deleteSummary(m, result));
+    } catch (err) {
+      const blocking = blockingGoalsOf(err);
+
+      if (blocking.length > 0) {
+        // The store's goal list was behind the database — a goal was pointed
+        // at this model elsewhere. Ask again with what the server reports
+        // rather than forcing past a warning the user never saw.
+        askDelete(m, blocking);
+        return;
+      }
+
+      s.ask(null);
+      s.toast(
+        err instanceof ApiClientError ? err.message : `Could not delete ${m.label}.`,
+      );
+    } finally {
+      deletingRef.current.delete(m.id);
+      setDeleting((d) => {
+        const next = { ...d };
+        delete next[m.id];
+        return next;
+      });
+    }
+  };
+
+  /**
+   * `blocking` is the server's list, passed only when a 409 has already come
+   * back. Otherwise the goals on screen are what the dialog describes, and the
+   * server gets the final say when the request goes out.
+   */
+  const askDelete = (m: Model, blocking?: BlockingGoal[]) => {
+    const active =
+      blocking ??
+      s.goals
+        .filter((g) => g.modelId === m.id && g.status === "active")
+        .map((g) => ({ id: g.id, name: g.name }));
+
+    // Paused and ended goals lose the reference too. They do not block the
+    // delete, so they are counted rather than listed.
+    const idle = s.goals.filter((g) => g.modelId === m.id && g.status !== "active").length;
+
+    const tail = "Cost estimates computed from its pricing go with it, and this cannot be undone.";
+
+    s.ask({
+      title: `Delete ${m.label}?`,
+      body: active.length
+        ? `${active.length} active ${active.length === 1 ? "goal uses" : "goals use"} this model. ` +
+          `Deleting it leaves ${active.length === 1 ? "that goal" : "those goals"} with no model until ` +
+          `you pick another, so ${active.length === 1 ? "its" : "their"} next scheduled run will not ` +
+          `generate. ${tail}`
+        : idle > 0
+          ? `${idle} paused or ended goal${idle === 1 ? "" : "s"} still name${idle === 1 ? "s" : ""} ` +
+            `this model; the reference is cleared. ${tail}`
+          : `The model is removed from this workspace. ${tail}`,
+      items: active.slice(0, 6).map((g) => ({ label: g.name })),
+      actionLabel: active.length ? "Delete and clear goals" : "Delete model",
+      border: "1px solid var(--red)",
+      bg: "var(--surface)",
+      fg: "var(--red)",
+      run: () => void runDelete(m, active.length > 0),
+    });
   };
 
   const scheduledCount = (plat: Platform) =>
@@ -129,17 +231,31 @@ export function Accounts() {
                 { label: "Output ₹ / M tok", value: m.outputPricePerMTokInr, step: 10, set: (v: number) => setVal(m.id, "outputPricePerMTokInr", v) },
               ];
 
+              const busy = !!deleting[m.id];
+
               return (
-                <div key={m.id} style={{ display: "flex", flexDirection: "column", gap: 12, padding: 16, border: "1px solid var(--border)", borderRadius: "var(--r4)", background: "var(--surface)" }}>
+                <div key={m.id} style={{ display: "flex", flexDirection: "column", gap: 12, padding: 16, border: "1px solid var(--border)", borderRadius: "var(--r4)", background: "var(--surface)", opacity: busy ? 0.55 : 1 }}>
                   <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                     <span style={{ flex: "1 1 auto", minWidth: 0 }}>
                       <span style={{ display: "block", fontSize: 14, fontWeight: 600 }}>{m.label}</span>
                       <span style={{ display: "block", fontSize: 12, color: "var(--fg2)" }}>{m.provider}</span>
                     </span>
                     <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--fg2)" }}>
-                      <input type="checkbox" checked={m.enabled} onChange={() => setVal(m.id, "enabled", !m.enabled)} style={{ accentColor: "var(--green-line)" }} />
+                      <input type="checkbox" checked={m.enabled} disabled={busy} onChange={() => setVal(m.id, "enabled", !m.enabled)} style={{ accentColor: "var(--green-line)" }} />
                       {m.enabled ? "Enabled" : "Disabled"}
                     </label>
+                    <button
+                      type="button"
+                      onClick={() => askDelete(m)}
+                      disabled={busy}
+                      aria-label={"Delete " + m.label}
+                      title={busy ? "Deleting…" : "Delete " + m.label}
+                      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "0 0 auto", width: 28, height: 28, padding: 0, border: "1px solid var(--red-br)", borderRadius: "var(--r2)", background: "var(--surface)", color: "var(--red)", cursor: busy ? "default" : "pointer" }}
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                        <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
                   </div>
 
                   <div>
