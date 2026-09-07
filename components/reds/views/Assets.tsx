@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { deleteAsset, updateAsset } from "@/lib/api-client";
 import { STATES } from "@/lib/reds/data";
+import { toRedsAsset } from "@/lib/reds/map";
 import { MONO, fmtBytes, relDT } from "@/lib/reds/format";
 import { EmptyState } from "../charts";
 import { chip, seg, useReds } from "../store";
@@ -58,6 +60,35 @@ function AssetsInner({ now }: { now: number }) {
   const selIds = Object.keys(assetSel).filter((k) => assetSel[k]);
   const toggle = (id: string) => setAssetSel((x) => ({ ...x, [id]: !x[id] }));
 
+  /**
+   * Edits are applied to the list first and sent after. A rejected write rolls
+   * the row back from the server's copy, so the table never shows a change
+   * that did not land.
+   */
+  const persistName = async (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    try {
+      const saved = await updateAsset(id, { name: trimmed });
+      s.setAssets((xs) => xs.map((x) => (x.id === id ? toRedsAsset(saved) : x)));
+    } catch (err) {
+      s.toast(err instanceof Error ? err.message : "Rename failed");
+      void s.refreshAssets();
+    }
+  };
+
+  const persistTags = async (id: string, tags: string[]) => {
+    s.setAssets((xs) => xs.map((x) => (x.id === id ? { ...x, tags } : x)));
+    try {
+      const saved = await updateAsset(id, { tags });
+      s.setAssets((xs) => xs.map((x) => (x.id === id ? toRedsAsset(saved) : x)));
+    } catch (err) {
+      s.toast(err instanceof Error ? err.message : "Could not save tags");
+      void s.refreshAssets();
+      throw err;
+    }
+  };
+
   /** Posts that would break if the given assets were deleted. */
   const blockers = (ids: string[]) =>
     ids
@@ -75,10 +106,10 @@ function AssetsInner({ now }: { now: number }) {
       br: "var(--border)",
       fg: "var(--fg2)",
       run: () => {
-        s.setAssets((xs) =>
-          xs.map((a) => (assetSel[a.id] && !a.tags.includes("reviewed") ? { ...a, tags: [...a.tags, "reviewed"] } : a)),
-        );
-        s.toast(selIds.length + " assets tagged “reviewed”");
+        const targets = s.assets.filter((a) => assetSel[a.id] && !a.tags.includes("reviewed"));
+        Promise.all(targets.map((a) => persistTags(a.id, [...a.tags, "reviewed"])))
+          .then(() => s.toast(selIds.length + " assets tagged “reviewed”"))
+          .catch(() => s.toast("Could not tag every asset"));
       },
     },
     { label: "Download", br: "var(--border)", fg: "var(--fg2)", run: () => s.toast(selIds.length + " assets queued for download") },
@@ -97,9 +128,17 @@ function AssetsInner({ now }: { now: number }) {
           });
           return;
         }
-        s.setAssets((xs) => xs.filter((a) => !assetSel[a.id]));
-        setAssetSel({});
-        s.toast(selIds.length + " assets deleted");
+        void Promise.allSettled(selIds.map((id) => deleteAsset(id))).then((results) => {
+          const gone = selIds.filter((_, i) => results[i].status === "fulfilled");
+          s.setAssets((xs) => xs.filter((a) => !gone.includes(a.id)));
+          setAssetSel({});
+          const failed = selIds.length - gone.length;
+          s.toast(
+            failed
+              ? `${gone.length} deleted, ${failed} could not be removed`
+              : gone.length + " assets deleted",
+          );
+        });
       },
     },
   ];
@@ -121,7 +160,7 @@ function AssetsInner({ now }: { now: number }) {
           Upload files
         </button>
         <span style={{ fontSize: 12, color: "var(--fg3)" }}>
-          Images, video and documents up to 25 MB. Uploads live in memory for this session only.
+          Images, video and documents up to 25 MB. Files are stored in S3 and listed from the database.
         </span>
       </div>
 
@@ -221,7 +260,13 @@ function AssetsInner({ now }: { now: number }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 14 }}>
           {rows.map((a) => (
             <div key={a.id} style={{ border: `1px solid ${assetSel[a.id] ? "var(--green-line)" : "var(--border)"}`, borderRadius: "var(--r4)", background: "var(--surface)", overflow: "hidden" }}>
-              <button type="button" onClick={() => s.setDrawerId(a.id)} aria-label={"Open " + a.name} style={{ display: "block", width: "100%", border: 0, padding: 0, background: a.tint, aspectRatio: "4 / 3" }} />
+              <button type="button" onClick={() => s.setDrawerId(a.id)} aria-label={"Open " + a.name} style={{ display: "block", width: "100%", border: 0, padding: 0, background: a.tint, aspectRatio: "4 / 3", overflow: "hidden" }}>
+                {/* The tint stays behind as the placeholder for anything with
+                    no still frame to show — video and PDFs included. */}
+                {a.previewUrl && a.kind !== "video" && a.kind !== "document" ? (
+                  <img src={a.previewUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                ) : null}
+              </button>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: 10 }}>
                 <input type="checkbox" aria-label={"Select " + a.name} checked={!!assetSel[a.id]} onChange={() => toggle(a.id)} style={{ accentColor: "var(--green-line)", marginTop: 3 }} />
                 <span style={{ flex: "1 1 auto", minWidth: 0 }}>
@@ -276,12 +321,19 @@ function AssetsInner({ now }: { now: number }) {
                     <input type="checkbox" aria-label={"Select " + a.name} checked={!!assetSel[a.id]} onChange={() => toggle(a.id)} style={{ accentColor: "var(--green-line)" }} />
                   </td>
                   <td style={{ padding: "6px 10px" }}>
-                    <button type="button" onClick={() => s.setDrawerId(a.id)} aria-label={"Open " + a.name} style={{ width: 34, height: 26, border: "1px solid var(--border-strong)", borderRadius: "var(--r2)", background: a.tint, padding: 0 }} />
+                    <button type="button" onClick={() => s.setDrawerId(a.id)} aria-label={"Open " + a.name} style={{ width: 34, height: 26, border: "1px solid var(--border-strong)", borderRadius: "var(--r2)", background: a.tint, padding: 0, overflow: "hidden" }}>
+                      {a.previewUrl && a.kind !== "video" && a.kind !== "document" ? (
+                        <img src={a.previewUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                      ) : null}
+                    </button>
                   </td>
                   <td style={{ padding: "6px 10px" }}>
                     <input
                       value={a.name}
                       onChange={(e) => s.setAssets((xs) => xs.map((x) => (x.id === a.id ? { ...x, name: e.target.value } : x)))}
+                      // Saved on blur rather than per keystroke: one request
+                      // for one rename, instead of one per character.
+                      onBlur={(e) => persistName(a.id, e.target.value)}
                       aria-label={"Rename " + a.name}
                       style={{ width: "100%", minWidth: 150, border: "1px solid transparent", borderRadius: "var(--r2)", background: "transparent", padding: "3px 5px", fontSize: 13 }}
                     />
@@ -299,7 +351,7 @@ function AssetsInner({ now }: { now: number }) {
                           <button
                             type="button"
                             aria-label={"Remove tag " + t}
-                            onClick={() => s.setAssets((xs) => xs.map((x) => (x.id === a.id ? { ...x, tags: x.tags.filter((y) => y !== t) } : x)))}
+                            onClick={() => persistTags(a.id, a.tags.filter((y) => y !== t))}
                             style={{ border: 0, background: "transparent", padding: 0, color: "var(--fg3)", fontSize: 11 }}
                           >
                             ×
