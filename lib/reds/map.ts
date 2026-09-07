@@ -6,9 +6,9 @@
  * file means neither side has to know about the other's casing.
  */
 
-import type { AssetRecord } from "../api-client";
+import type { AssetRecord, ModelRecord, ModelRoleWire, UpdateModelBody } from "../api-client";
 import { TINTS } from "./data";
-import type { Asset, AssetKind, Platform, Post, PostState, Slide } from "./types";
+import type { Asset, AssetKind, Model, ModelRole, Platform, Post, PostState, Slide } from "./types";
 
 /** Stable swatch per asset, so a row keeps its colour across reloads. */
 function tintFor(id: string): string {
@@ -45,7 +45,14 @@ const STATE_BY_STATUS: Record<string, PostState> = {
   CANCELLED: "draft",
 };
 
-type ApiPostMedia = { id: string; order: number; url: string };
+type ApiPostMedia = {
+  id: string;
+  order: number;
+  url: string;
+  previewUrl?: string | null;
+  width?: number | null;
+  height?: number | null;
+};
 
 type ApiPost = {
   id: string;
@@ -56,6 +63,12 @@ type ApiPost = {
   publishedAt: string | null;
   intendedPlatforms: string[];
   media?: ApiPostMedia[];
+  modelId?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  estimatedCostInr?: number | null;
+  generationMs?: number | null;
+  runCount?: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -77,6 +90,9 @@ export function toRedsPost(p: ApiPost): Post {
       headline: "",
       body: "",
       layout: "cover" as const,
+      ...(m.previewUrl ? { previewUrl: m.previewUrl } : {}),
+      ...(m.width ? { width: m.width } : {}),
+      ...(m.height ? { height: m.height } : {}),
     }));
 
   return {
@@ -89,18 +105,62 @@ export function toRedsPost(p: ApiPost): Post {
     state: STATE_BY_STATUS[p.status] ?? "draft",
     scheduledFor: p.scheduledAt,
     publishedAt: p.publishedAt,
-    // Generation accounting is not recorded yet; the columns render as zeroes
-    // rather than invented numbers.
+    // Recorded per run by the generation pipeline. A post composed by hand has
+    // none of it, and still reports zeroes rather than invented numbers.
     usage: {
-      inputTokens: 0,
-      outputTokens: 0,
-      estimatedCostInr: 0,
-      generationMs: 0,
-      modelId: "",
-      runs: 0,
+      inputTokens: p.inputTokens ?? 0,
+      outputTokens: p.outputTokens ?? 0,
+      estimatedCostInr: p.estimatedCostInr ?? 0,
+      generationMs: p.generationMs ?? 0,
+      modelId: p.modelId ?? "",
+      runs: p.runCount ?? 0,
     },
     versions: [],
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };
+}
+
+/**
+ * The role enum and the optional key suffix are the only two fields that need
+ * translating, but this lived inline in both the provider and the Accounts
+ * view — so the two copies could drift apart.
+ */
+export function toRedsModel(m: ModelRecord): Model {
+  return {
+    id: m.id,
+    label: m.label,
+    provider: m.provider,
+    role: (m.role ?? "BOTH").toLowerCase() as ModelRole,
+    inputPricePerMTokInr: m.inputPricePerMTokInr,
+    outputPricePerMTokInr: m.outputPricePerMTokInr,
+    maxTokens: m.maxTokens,
+    temperature: m.temperature,
+    enabled: m.enabled,
+    keyLast4: m.keyLast4 ?? undefined,
+  };
+}
+
+/**
+ * Reverse of `toRedsModel`, for the fields the Accounts view edits in place.
+ *
+ * `keyLast4` is deliberately absent: the suffix is derived server-side from a
+ * full `key`, so sending it back would let the client dictate a value it has
+ * no way to verify.
+ */
+export function toModelWirePatch(patch: Partial<Model>): UpdateModelBody {
+  const out: UpdateModelBody = {};
+  if (patch.label !== undefined) out.label = patch.label;
+  if (patch.provider !== undefined) out.provider = patch.provider;
+  if (patch.role !== undefined) out.role = patch.role.toUpperCase() as ModelRoleWire;
+  if (patch.inputPricePerMTokInr !== undefined) {
+    out.inputPricePerMTokInr = patch.inputPricePerMTokInr;
+  }
+  if (patch.outputPricePerMTokInr !== undefined) {
+    out.outputPricePerMTokInr = patch.outputPricePerMTokInr;
+  }
+  if (patch.maxTokens !== undefined) out.maxTokens = patch.maxTokens;
+  if (patch.temperature !== undefined) out.temperature = patch.temperature;
+  if (patch.enabled !== undefined) out.enabled = patch.enabled;
+  return out;
 }
