@@ -46,7 +46,14 @@ export interface ImagePromptOptions {
   };
   /** Custom text overlay area directive to ensure space for captions/typography */
   leaveNegativeSpace?: boolean;
-  /** Tech architecture infographic details (for flowcharts, timelines, & metrics graphics) */
+  /**
+   * Tech architecture infographic details (flowcharts, timelines, metrics).
+   *
+   * Every field is optional and every one is opt-in: a section the caller does
+   * not supply is left out of the prompt entirely rather than filled with a
+   * plausible default. Inventing a flowchart means describing someone else's
+   * architecture on someone else's post.
+   */
   infographicDetails?: {
     headerTitle?: string;
     subtitle?: string;
@@ -54,6 +61,7 @@ export interface ImagePromptOptions {
     metricsText?: string;
     takeawayQuote?: string;
     timelineSteps?: string[];
+    badges?: string[];
   };
 }
 
@@ -64,6 +72,7 @@ export interface TechInfographicOptions {
   timelineSteps?: string[];
   metricsText?: string;
   takeawayQuote?: string;
+  badges?: string[];
   platform?: Platform;
   aspectRatio?: AspectRatio;
   colorTheme?: string;
@@ -186,34 +195,37 @@ export const STYLE_PRESETS: Record<
     camera: "Cinematic wide angle shot, low perspective",
     keywords: ["holographic display", "future technology overlay", "volumetric fog", "high tech visual"],
   },
+  // A preset describes how a graphic looks, never what is in it.
+  //
+  // This one used to name the sections it expected -- a request lifecycle
+  // timeline, a metrics card, a quote banner -- which pushed the model to draw
+  // all three even for a goal that supplied none of them, and to reach for
+  // backend imagery whatever the subject was.
   "tech-infographic": {
-    description: "Sleek dark mode software architecture infographic featuring glowing flowchart nodes, request lifecycle timeline, metrics card, and key takeaway quote banner",
+    description: "Sleek dark mode technical infographic built from glowing nodes, connective paths and layered glassmorphism cards",
     lighting: "Deep obsidian canvas `#0A0E1A` lit by glowing cyan `#00F0FF`, electric violet `#8B5CF6`, emerald green `#10B981`, and amber `#F59E0B` directional path arrows",
-    colorPalette: "Dark slate navy background `#0A0E1A`, neon electric cyan request flow paths, glowing purple cache cards, emerald green hit paths, amber database nodes",
+    colorPalette: "Dark slate navy background `#0A0E1A`, neon electric cyan path lines, glowing violet cards, emerald green highlights, amber accent nodes",
     camera: "Crisp top-down orthographic visual graphic layout with flat layered glassmorphism cards and sharp technical typography space",
     keywords: [
-      "system architecture flowchart",
-      "dark mode software infographic diagram",
-      "backend data request flow journey",
-      "glowing neon visual nodes with icons",
-      "color coded connecting arrows",
-      "numbered lifecycle timeline steps",
-      "average response time metrics panel",
-      "highlight quote banner with quotation marks",
-      "LinkedIn software engineering carousel graphic"
+      "dark mode technical infographic",
+      "glowing neon nodes with vector icons",
+      "colour coded connecting arrows",
+      "flat layered glassmorphism cards",
+      "sharp technical typography",
+      "clean visual hierarchy"
     ],
   },
   "architecture-diagram": {
-    description: "High-level cloud infrastructure and backend architecture schematic with microservices, cache layers, load balancers, and database clusters",
+    description: "High-level system schematic of grouped components joined by connective paths, on layered panels",
     lighting: "Self-illuminating glowing neon circuit paths on dark slate backdrop",
     colorPalette: "Midnight obsidian background `#090D16`, electric blue `#38BDF8`, purple `#A855F7`, cyan `#06B6D4` node highlights",
     camera: "Direct front orthographic schematic layout, clean structured multi-column arrangement",
     keywords: [
-      "cloud architecture diagram",
-      "microservices system schematic",
+      "system schematic diagram",
       "dark mode developer visual",
-      "glowing data pipeline nodes",
-      "Load Balancer, Redis Cache, SQL Database icons",
+      "glowing pipeline nodes",
+      "orthographic component layout",
+      "labelled boxes joined by arrows",
       "clean technical visual hierarchy"
     ],
   },
@@ -222,6 +234,22 @@ export const STYLE_PRESETS: Record<
 /**
  * Standard default negative prompt to purge low-quality artifacts
  */
+/**
+ * Every style, at runtime.
+ *
+ * Derived from `STYLE_PRESETS` rather than written out again: the union type
+ * and this list cannot drift apart, and zod can validate a stored
+ * `Goal.visualStyle` against it without the database mirroring the union.
+ */
+export const VISUAL_STYLES = Object.keys(STYLE_PRESETS) as VisualStyle[];
+
+export function isVisualStyle(value: unknown): value is VisualStyle {
+  return typeof value === "string" && Object.hasOwn(STYLE_PRESETS, value);
+}
+
+/** Styles whose prompt describes a diagram rather than a picture. */
+export const DIAGRAM_STYLES: VisualStyle[] = ["tech-infographic", "architecture-diagram"];
+
 export const DEFAULT_NEGATIVE_PROMPT =
   "blurry, distorted text, low quality, pixelated, jpeg artifacts, ugly, oversaturated, deformed hands, duplicate limbs, cluttered background, out of frame, cropped head, watermark, signature, draft, bad anatomy";
 
@@ -271,38 +299,57 @@ export function buildImagePrompt(options: ImagePromptOptions): GeneratedPromptRe
   // 3. Infographic & Architecture Layout (if applicable)
   if (style === "tech-infographic" || style === "architecture-diagram" || options.infographicDetails) {
     const details = options.infographicDetails || {};
-    const nodesStr = details.flowchartNodes
-      ? details.flowchartNodes.join(" -> ")
-      : "Browser (User Request) -> Load Balancer -> Application Server -> Cache Check (is data in Redis?) -> Redis Cache / Database Cluster -> HTTP Response";
-    const quoteStr =
-      details.takeawayQuote ||
-      "Fast applications don't always use faster databases — they avoid unnecessary database queries.";
-    const metricsStr =
-      details.metricsText ||
-      "Average Response Time: Cache Hit 1 - 5 ms | Database Query 20 - 150 ms";
 
     parts.push("Layout Structure: Comprehensive dark-mode tech visual layout with high visual contrast");
+
+    // The header is the only section that always renders: a title can always
+    // be derived from the topic. Everything below is conditional on the caller
+    // having actually supplied it.
     parts.push(
-      `Header Section: Bold header titled "${
-        details.headerTitle || topic
-      }" with subtitle "${details.subtitle || "A step-by-step journey inside a modern backend application"}"`
+      `Header Section: Bold header titled "${details.headerTitle || topic}"` +
+        (details.subtitle ? ` with subtitle "${details.subtitle}"` : ""),
     );
-    parts.push(
-      `Central Flowchart Diagram: Connected workflow nodes (${nodesStr}) with glowing neon directional path lines. Color legend: Blue for Request Flow, Green for Cache Hit (Fast Path), Orange for Cache Miss (DB Path), Purple for Response Flow`
-    );
-    parts.push(
-      "Side Panel: 'Backend Components' legend listing Load Balancer, Application Server, Redis Cache, Database Cluster, HTTP Response with glowing 3D-like icons"
-    );
-    parts.push(
-      "Lower Section Timeline: 'Request Lifecycle Timeline' containing numbered steps (1 through 8) inside glowing circles with vector icons"
-    );
-    parts.push(`Metrics Stat Box: Card displaying '${metricsStr}' with green and orange metric highlights`);
-    parts.push(
-      `Takeaway Banner: Dark frosted glass quotation block with blue quotes around '${quoteStr}'`
-    );
-    parts.push(
-      "Footer Status Badges: Sleek glowing pill tags displaying [Fast Response], [Scalable], [Reliable], [Cached], and [Production Ready]"
-    );
+
+    if (details.flowchartNodes?.length) {
+      parts.push(
+        `Central Flowchart Diagram: Connected workflow nodes (${details.flowchartNodes.join(" -> ")}) ` +
+          "with glowing neon directional path lines. Color legend: Blue for forward flow, " +
+          "Green for the fast path, Orange for the slow path, Purple for the return flow",
+      );
+      // The legend names the caller's own nodes. It used to list a fixed
+      // backend stack — Load Balancer, Redis, Database Cluster — on every
+      // infographic, whatever the post was about.
+      parts.push(
+        `Side Panel: 'Components' legend listing ${details.flowchartNodes.join(", ")} with glowing 3D-like icons`,
+      );
+    }
+
+    if (details.timelineSteps?.length) {
+      parts.push(
+        `Lower Section Timeline: numbered steps 1 through ${details.timelineSteps.length} inside glowing ` +
+          `circles with vector icons, reading ${details.timelineSteps.join(" | ")}`,
+      );
+    }
+
+    if (details.metricsText) {
+      parts.push(
+        `Metrics Stat Box: Card displaying '${details.metricsText}' with green and orange metric highlights`,
+      );
+    }
+
+    if (details.takeawayQuote) {
+      parts.push(
+        `Takeaway Banner: Dark frosted glass quotation block with blue quotes around '${details.takeawayQuote}'`,
+      );
+    }
+
+    if (details.badges?.length) {
+      parts.push(
+        `Footer Status Badges: Sleek glowing pill tags displaying ${details.badges
+          .map((b) => `[${b}]`)
+          .join(", ")}`,
+      );
+    }
   } else if (leaveNegativeSpace) {
     // Composition & Space for standard graphics
     parts.push(
@@ -359,31 +406,21 @@ export function buildImagePrompt(options: ImagePromptOptions): GeneratedPromptRe
 export function buildTechInfographicPrompt(
   options: TechInfographicOptions
 ): GeneratedPromptResult {
+  // Content fields deliberately have no defaults.
+  //
+  // They used to default to a Redis request-lifecycle diagram — flowchart
+  // nodes, an eight-step timeline, cache-hit latency figures and a quote about
+  // database queries — so a goal about anything else that picked an
+  // infographic style still asked the model to draw that backend diagram.
+  // Only presentation (platform framing, colour theme) defaults now.
   const {
     title,
-    subtitle = "A step-by-step journey inside a modern backend application",
-    flowchartNodes = [
-      "Browser (User Request)",
-      "Load Balancer",
-      "Application Server",
-      "Cache Check (is data in Redis?)",
-      "Redis Cache (Return data instantly)",
-      "Database Cluster (SQL/NoSQL)",
-      "Store in Redis Cache",
-      "HTTP Response",
-    ],
-    timelineSteps = [
-      "1. Browser sends request",
-      "2. Load Balancer selects server",
-      "3. Application Server processes request",
-      "4. Check Redis Cache",
-      "5. Cache Hit -> Return OR Cache Miss -> Query Database",
-      "6. Save data in Cache",
-      "7. Send HTTP Response",
-      "8. Browser renders webpage",
-    ],
-    metricsText = "Average Response Time: Cache Hit 1 - 5 ms | Database Query 20 - 150 ms",
-    takeawayQuote = "Fast applications don't always use faster databases — they avoid unnecessary database queries.",
+    subtitle,
+    flowchartNodes,
+    timelineSteps,
+    metricsText,
+    takeawayQuote,
+    badges,
     platform = "LINKEDIN",
     aspectRatio = platform === "LINKEDIN" ? "1.91:1" : "4:5",
     colorTheme = "Dark obsidian navy `#0A0E1A`, electric cyan `#00F0FF`, violet `#8B5CF6`, emerald green `#10B981`, amber orange `#F59E0B`",
@@ -403,6 +440,7 @@ export function buildTechInfographicPrompt(
       metricsText,
       takeawayQuote,
       timelineSteps,
+      badges,
     },
     leaveNegativeSpace: false,
   });
@@ -415,7 +453,15 @@ export function buildCarouselPrompts(
   topic: string,
   slideCount: number = 5,
   style: VisualStyle = "3d-render",
-  platform: Platform = "INSTAGRAM"
+  platform: Platform = "INSTAGRAM",
+  /**
+   * Framing for every slide.
+   *
+   * Without this the builder fell back to its own per-platform default and
+   * quietly overrode the ratio configured in workspace settings, so a
+   * workspace set to square LinkedIn posts still got 1.91:1 prompts.
+   */
+  aspectRatio?: AspectRatio,
 ): GeneratedPromptResult[] {
   const prompts: GeneratedPromptResult[] = [];
 
@@ -433,6 +479,7 @@ export function buildCarouselPrompts(
       }`,
       style,
       platform,
+      ...(aspectRatio ? { aspectRatio } : {}),
       carouselInfo: {
         slideNumber: i,
         totalSlides: slideCount,
