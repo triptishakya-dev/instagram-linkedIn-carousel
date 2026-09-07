@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { TINTS, blankGoal } from "@/lib/reds/data";
+import { uploadAsset, type AssetRecord } from "@/lib/api-client";
+import { blankGoal } from "@/lib/reds/data";
 import { DAY, DOW, MONO, inr, iso } from "@/lib/reds/format";
-import { CURRENT_USER, chip, seg, useReds } from "../store";
+import { toRedsAsset } from "@/lib/reds/map";
+import { chip, seg, useReds } from "../store";
 import type { Asset, Cadence, Goal, Platform } from "@/lib/reds/types";
 
 const CADS: { k: Cadence; label: string }[] = [
@@ -50,7 +52,6 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
   const [zoneHot, setZoneHot] = useState(false);
   const [dragAsset, setDragAsset] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
-  const [logoKey, setLogoKey] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
 
@@ -76,21 +77,15 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
   const displayLogoPreview = logoPreviewUrl || selectedLogo?.previewUrl;
   const displayLogoName = selectedLogo
     ? selectedLogo.name
-    : logoKey
-      ? "Uploaded to AWS S3"
-      : logoPreviewUrl
-        ? "Brand Logo Image"
-        : d.brandLogoAssetId
-          ? d.brandLogoAssetId
-          : "No logo selected";
+    : logoPreviewUrl
+      ? "Brand logo"
+      : d.brandLogoAssetId || "No logo selected";
 
-  const displayLogoSub = logoKey
-    ? logoKey
-    : selectedLogo
-      ? `${selectedLogo.width || 1080}×${selectedLogo.height || 1080} · ${selectedLogo.mimeType || "image/png"}`
-      : d.brandLogoAssetId
-        ? "Selected logo"
-        : "Add or select a brand logo";
+  const displayLogoSub = selectedLogo
+    ? `${selectedLogo.width || 1080}×${selectedLogo.height || 1080} · ${selectedLogo.mimeType}`
+    : d.brandLogoAssetId
+      ? "Selected logo"
+      : "Add or select a brand logo";
 
   const model = s.modelById(d.modelId) || s.models[0];
   const cad = d.schedule.cadence;
@@ -111,85 +106,56 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
   const addAssets = (ids: string[]) =>
     set({ imageAssetIds: [...d.imageAssetIds, ...ids.filter((i) => !d.imageAssetIds.includes(i))] });
 
-  const ingest = (files: FileList | null | undefined) => {
-    const ids: string[] = [];
-    const added: Asset[] = [];
-    Array.from(files || []).slice(0, 8).forEach((f, i) => {
-      const aid = "AST-U" + (s.assets.length + i + 1);
-      added.push({
-        id: aid, name: f.name, kind: "image", mimeType: f.type || "image/jpeg", sizeBytes: f.size,
-        width: 1080, height: 1350, tags: ["upload"], usedInPostIds: [], uploadedBy: CURRENT_USER,
-        uploadedAt: iso(Date.now()), tint: TINTS[(s.assets.length + i) % TINTS.length],
-        previewUrl: URL.createObjectURL(f),
-      });
-      ids.push(aid);
-    });
-    if (!ids.length) return;
-    s.setAssets((xs) => [...xs, ...added]);
-    addAssets(ids);
-    s.toast(ids.length + (ids.length === 1 ? " image added" : " images added"));
+  const ingest = async (files: FileList | null | undefined) => {
+    const arr = Array.from(files || []).slice(0, 8);
+    if (!arr.length) return;
+
+    const settled = await Promise.allSettled(
+      arr.map((f) => uploadAsset(f, { kind: "IMAGE", tags: ["upload"] })),
+    );
+
+    const uploaded = settled
+      .filter((r): r is PromiseFulfilledResult<AssetRecord> => r.status === "fulfilled")
+      .map((r) => r.value);
+
+    if (uploaded.length) {
+      s.setAssets((xs) => [
+        ...uploaded.map(toRedsAsset),
+        ...xs.filter((x) => !uploaded.some((u) => u.id === x.id)),
+      ]);
+      addAssets(uploaded.map((u) => u.id));
+    }
+
+    const failed = arr.length - uploaded.length;
+    s.toast(
+      failed
+        ? `${uploaded.length} uploaded, ${failed} failed`
+        : uploaded.length + (uploaded.length === 1 ? " image added" : " images added"),
+    );
   };
 
+  /**
+   * The logo is an asset like any other, so it goes through the same
+   * presign -> S3 -> row pipeline. The goal then stores the asset id, which
+   * survives a reload; the previous version kept a tmp key and a blob URL,
+   * neither of which outlived the tab.
+   */
   const uploadLogoToS3 = async (file: File) => {
-    const previewUrl = URL.createObjectURL(file);
-    setLogoPreviewUrl(previewUrl);
-
-    // Create local asset so it immediately displays and registers in store
-    const assetId = "AST-LOGO-" + Date.now();
-    const newLogoAsset: Asset = {
-      id: assetId,
-      name: file.name,
-      kind: "logo",
-      mimeType: file.type || "image/png",
-      sizeBytes: file.size,
-      width: 1080,
-      height: 1080,
-      tags: ["logo"],
-      usedInPostIds: [],
-      uploadedBy: CURRENT_USER,
-      uploadedAt: iso(Date.now()),
-      tint: "var(--green-tint)",
-      previewUrl,
-    };
-
-    s.setAssets((xs) => [newLogoAsset, ...xs]);
-    set({ brandLogoAssetId: assetId });
+    const preview = URL.createObjectURL(file);
+    setLogoPreviewUrl(preview);
+    setLogoUploading(true);
 
     try {
-      setLogoUploading(true);
-      const presignRes = await fetch("/api/uploads/presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileName: file.name,
-          contentType: file.type || "image/png",
-          sizeBytes: file.size,
-        }),
-      });
-
-      if (!presignRes.ok) {
-        const errData = await presignRes.json().catch(() => ({}));
-        throw new Error(errData.message || "Failed to get presigned upload URL.");
-      }
-
-      const { url, key } = await presignRes.json();
-
-      const putRes = await fetch(url, {
-        method: "PUT",
-        headers: { "Content-Type": file.type || "image/png" },
-        body: file,
-      });
-
-      if (!putRes.ok) {
-        throw new Error("Failed to upload image to S3.");
-      }
-
-      setLogoKey(key);
-      set({ brandLogoAssetId: key });
-      s.toast("Logo uploaded to AWS S3 successfully");
-    } catch (err: any) {
-      s.toast(err.message || "S3 upload completed locally");
+      const asset = await uploadAsset(file, { kind: "LOGO", tags: ["logo"] });
+      s.setAssets((xs) => [toRedsAsset(asset), ...xs.filter((x) => x.id !== asset.id)]);
+      set({ brandLogoAssetId: asset.id });
+      setLogoPreviewUrl(asset.previewUrl ?? preview);
+      s.toast("Logo uploaded to S3");
+    } catch (err) {
+      setLogoPreviewUrl(null);
+      s.toast(err instanceof Error ? err.message : "Logo upload failed");
     } finally {
+      URL.revokeObjectURL(preview);
       setLogoUploading(false);
     }
   };
@@ -236,7 +202,6 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
         name: d.name,
         platforms: d.platforms.map((p) => p.toUpperCase()),
         brandLogoAssetId: d.brandLogoAssetId || null,
-        logoKey: logoKey || null,
         captionPrompt: d.captionPrompt || null,
         imagePrompt: d.imagePrompt || null,
         startDate: d.startDate,
@@ -256,7 +221,7 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.message || "Failed to save goal.");
+        throw new Error(errData?.error?.message || "Failed to save goal.");
       }
 
       const savedGoal = await res.json();
@@ -344,7 +309,6 @@ function GoalEditorInner({ id, now }: { id: string; now: number }) {
                         type="button"
                         onClick={() => {
                           set({ brandLogoAssetId: a.id });
-                          setLogoKey(null);
                           setLogoPreviewUrl(a.previewUrl || null);
                           setLogoModalOpen(false);
                           s.toast("Selected " + a.name);
