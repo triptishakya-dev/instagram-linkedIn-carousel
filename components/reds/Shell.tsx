@@ -75,10 +75,6 @@ export function Shell({ children }: { children: ReactNode }) {
   });
 
   const narrow = s.vw < 1100;
-  const conns = [
-    { short: "IG", dot: "var(--green)", title: "Instagram — connected as @reds.studio, synced 20 minutes ago" },
-    { short: "LI", dot: "var(--amber)", title: "LinkedIn — token expires in 5 days" },
-  ];
   const themes: { k: "light" | "dark" | "system"; label: string; glyph: string }[] = [
     { k: "light", label: "Light", glyph: "Light" },
     { k: "dark", label: "Dark", glyph: "Dark" },
@@ -255,14 +251,15 @@ export function Shell({ children }: { children: ReactNode }) {
             </button>
 
             {s.vw >= 900 ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "0 0 auto" }} aria-label="Platform connections">
-                {conns.map((c) => (
-                  <span key={c.short} title={c.title} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "var(--fg2)" }}>
-                    <span aria-hidden style={{ width: 7, height: 7, borderRadius: "50%", background: c.dot }} />
-                    {c.short}
-                  </span>
-                ))}
-              </div>
+              <button
+                type="button"
+                onClick={() => s.go("/accounts")}
+                title="No platforms connected — open Accounts to connect one"
+                style={{ display: "flex", alignItems: "center", gap: 5, flex: "0 0 auto", border: 0, background: "transparent", padding: 0, fontSize: 12, color: "var(--fg3)" }}
+              >
+                <span aria-hidden style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--n300)" }} />
+                Not connected
+              </button>
             ) : null}
 
             <div role="group" aria-label="Theme" style={{ display: "flex", padding: 2, gap: 2, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface2)" }}>
@@ -286,9 +283,11 @@ export function Shell({ children }: { children: ReactNode }) {
             <button
               type="button"
               aria-label="Account menu"
-              style={{ width: 28, height: 28, borderRadius: "50%", border: "1px solid var(--border)", background: "var(--green-tint)", color: "var(--green-text)", fontSize: 12, fontWeight: 600 }}
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: "50%", border: "1px solid var(--border)", background: "var(--surface2)", color: "var(--fg3)", padding: 0 }}
             >
-              AR
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M12 8a3 3 0 100 6 3 3 0 000-6M5 20c1.6-3.4 4-5 7-5s5.4 1.6 7 5" />
+              </svg>
             </button>
           </div>
         </header>
