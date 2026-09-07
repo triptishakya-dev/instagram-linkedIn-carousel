@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { PILL } from "@/lib/reds/data";
 import { MONO, absDT, inr, num } from "@/lib/reds/format";
+import { EmptyState } from "../charts";
 import { seg, useReds } from "../store";
 import type { Model, ModelRole, Platform } from "@/lib/reds/types";
 
@@ -12,27 +13,30 @@ const ROLES: { k: ModelRole; label: string }[] = [
   { k: "both", label: "Both" },
 ];
 
-const CONNECTIONS: {
+/** Platforms the product can post to. Account details arrive from OAuth. */
+const PLATFORMS: { plat: Platform; label: string; avatar: string }[] = [
+  { plat: "instagram", label: "Instagram", avatar: "var(--green-tint2)" },
+  { plat: "linkedin", label: "LinkedIn", avatar: "var(--k200)" },
+];
+
+interface Connection {
   plat: Platform;
-  platform: string;
   handle: string;
   scopes: string;
-  days: number;
-  sync: string;
-  avatar: string;
-}[] = [
-  { plat: "instagram", platform: "Instagram", handle: "@reds.studio", scopes: "content_publish · pages_read · insights", days: 41, sync: "synced 20 minutes ago", avatar: "var(--green-tint2)" },
-  { plat: "linkedin", platform: "LinkedIn", handle: "REDS Studio", scopes: "w_organization_social · r_organization_admin", days: 5, sync: "synced 3 hours ago", avatar: "var(--k200)" },
-];
+  expiresInDays: number;
+  syncedLabel: string;
+}
 
 export function Accounts() {
   const s = useReds();
   const [tab, setTab] = useState<"models" | "connections">("models");
   const [roleDefaults, setRoleDefaults] = useState<Record<ModelRole, string>>({
-    caption: "mdl-haiku",
-    slides: "mdl-sonnet",
-    both: "mdl-sonnet",
+    caption: "",
+    slides: "",
+    both: "",
   });
+  // Populated by OAuth; nothing is connected until the user authorises.
+  const [connections] = useState<Connection[]>([]);
 
   useEffect(() => {
     fetch("/api/models")
@@ -106,6 +110,12 @@ export function Accounts() {
       {/* ---- models ---- */}
       {tab === "models" ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {s.models.length === 0 ? (
+            <EmptyState
+              title="No models configured"
+              body="Add a provider model with its pricing and a key. Goals pick from this list, and every cost estimate in the product is computed from it."
+            />
+          ) : null}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(330px,1fr))", gap: 16 }}>
             {s.models.map((m) => {
               const mine = s.posts.filter((p) => p.usage.modelId === m.id);
@@ -188,6 +198,7 @@ export function Accounts() {
                   onChange={(e) => setRoleDefaults((x) => ({ ...x, [r.k]: e.target.value }))}
                   style={{ padding: "7px 9px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", fontSize: 13, color: "var(--fg)" }}
                 >
+                  <option value="">None selected</option>
                   {s.models.map((m) => (
                     <option key={m.id} value={m.id}>{m.label}</option>
                   ))}
@@ -213,49 +224,60 @@ export function Accounts() {
       {/* ---- connections ---- */}
       {tab === "connections" ? (
         <ul style={{ listStyle: "none", margin: 0, padding: 0, borderTop: "1px solid var(--border-strong)" }}>
-          {CONNECTIONS.map((c) => {
-            const soon = c.days <= 7;
-            const pill = soon
-              ? { bg: "var(--amber-bg)", fg: "var(--amber)", br: "var(--amber-br)" }
-              : PILL.n;
+          {PLATFORMS.map((p) => {
+            const c = connections.find((x) => x.plat === p.plat);
+            const soon = !!c && c.expiresInDays <= 7;
+            const pill = !c
+              ? PILL.n
+              : soon
+                ? { bg: "var(--amber-bg)", fg: "var(--amber)", br: "var(--amber-br)" }
+                : PILL.n;
 
-            const actions = [
-              { label: "Reconnect", br: "var(--border)", bg: "var(--surface)", fg: "var(--fg2)", weight: 400, run: () => s.toast(c.platform + " reconnected") },
-              {
-                label: "Disconnect",
-                br: "var(--red-br)",
-                bg: "var(--surface)",
-                fg: "var(--red)",
-                weight: 400,
-                run: () =>
-                  s.ask({
-                    title: "Disconnect " + c.platform + "?",
-                    body: `${scheduledCount(c.plat)} scheduled posts target ${c.platform}. They will fail at their scheduled time until the account is reconnected.`,
-                    items: s.posts
-                      .filter((p) => p.state === "scheduled" && p.platforms.includes(c.plat))
-                      .slice(0, 5)
-                      .map((p) => ({ label: p.id + " — " + absDT(p.scheduledFor) })),
-                    actionLabel: "Disconnect",
-                    border: "1px solid var(--red)",
+            const actions = c
+              ? [
+                  { label: "Reconnect", br: "var(--border)", bg: "var(--surface)", fg: "var(--fg2)", weight: 400, run: () => s.toast(p.label + " reconnected") },
+                  {
+                    label: "Disconnect",
+                    br: "var(--red-br)",
                     bg: "var(--surface)",
                     fg: "var(--red)",
-                    run: () => { s.ask(null); s.toast(c.platform + " disconnected"); },
-                  }),
-              },
-            ];
+                    weight: 400,
+                    run: () =>
+                      s.ask({
+                        title: "Disconnect " + p.label + "?",
+                        body: `${scheduledCount(p.plat)} scheduled posts target ${p.label}. They will fail at their scheduled time until the account is reconnected.`,
+                        items: s.posts
+                          .filter((x) => x.state === "scheduled" && x.platforms.includes(p.plat))
+                          .slice(0, 5)
+                          .map((x) => ({ label: x.id + " — " + absDT(x.scheduledFor) })),
+                        actionLabel: "Disconnect",
+                        border: "1px solid var(--red)",
+                        bg: "var(--surface)",
+                        fg: "var(--red)",
+                        run: () => { s.ask(null); s.toast(p.label + " disconnected"); },
+                      }),
+                  },
+                ]
+              : [
+                  { label: "Connect", br: "var(--green-line)", bg: "var(--green-tint)", fg: "var(--green-text)", weight: 600, run: () => s.toast("Authorisation for " + p.label + " is not wired yet") },
+                ];
 
             return (
-              <li key={c.plat} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, padding: "16px 2px", borderBottom: "1px solid var(--border)" }}>
-                <span aria-hidden style={{ width: 40, height: 40, borderRadius: "50%", border: "1px solid var(--border-strong)", background: c.avatar }} />
+              <li key={p.plat} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, padding: "16px 2px", borderBottom: "1px solid var(--border)" }}>
+                <span aria-hidden style={{ width: 40, height: 40, borderRadius: "50%", border: "1px solid var(--border-strong)", background: c ? p.avatar : "var(--sunken)" }} />
                 <span style={{ flex: "1 1 220px", minWidth: 0 }}>
-                  <span style={{ display: "block", fontSize: 14, fontWeight: 500 }}>{c.platform}</span>
-                  <span style={{ display: "block", fontSize: 12, color: "var(--fg2)" }}>{c.handle}</span>
+                  <span style={{ display: "block", fontSize: 14, fontWeight: 500 }}>{p.label}</span>
+                  <span style={{ display: "block", fontSize: 12, color: "var(--fg2)" }}>{c ? c.handle : "No account linked"}</span>
                 </span>
-                <span style={{ flex: "1 1 200px", fontSize: 12, color: "var(--fg2)" }}>{c.scopes}</span>
+                <span style={{ flex: "1 1 200px", fontSize: 12, color: "var(--fg2)" }}>{c ? c.scopes : "—"}</span>
                 <span style={{ flex: "0 0 auto", fontSize: 11, padding: "2px 8px", borderRadius: 999, background: pill.bg, color: pill.fg, border: `1px solid ${pill.br}` }}>
-                  {soon ? `Token expires in ${c.days} days` : `Token valid ${c.days} more days`}
+                  {!c
+                    ? "Not connected"
+                    : soon
+                      ? `Token expires in ${c.expiresInDays} days`
+                      : `Token valid ${c.expiresInDays} more days`}
                 </span>
-                <span style={{ flex: "0 0 auto", fontSize: 12, color: "var(--fg2)" }}>{c.sync}</span>
+                <span style={{ flex: "0 0 auto", fontSize: 12, color: "var(--fg2)" }}>{c ? c.syncedLabel : "never synced"}</span>
                 <span style={{ flex: "0 0 auto", display: "flex", gap: 8 }}>
                   {actions.map((a) => (
                     <button key={a.label} type="button" onClick={a.run} style={{ padding: "5px 11px", border: `1px solid ${a.br}`, borderRadius: "var(--r3)", background: a.bg, color: a.fg, fontSize: 12, fontWeight: a.weight }}>
