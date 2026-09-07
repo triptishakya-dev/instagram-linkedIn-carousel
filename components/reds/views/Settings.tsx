@@ -70,8 +70,8 @@ export function Settings() {
   ];
 
   const integrations = [
-    { plat: "Instagram", state: "Connected", ratio: st.igRatio, ratios: ["4:5", "1:1"], slides: st.igSlides, first: true },
-    { plat: "LinkedIn", state: "Token expiring", ratio: st.liRatio, ratios: ["1:1", "1.91:1"], slides: st.liSlides, first: false },
+    { plat: "Instagram", ratio: st.igRatio, ratios: ["4:5", "1:1"], slides: st.igSlides, first: true },
+    { plat: "LinkedIn", ratio: st.liRatio, ratios: ["1:1", "1.91:1"], slides: st.liSlides, first: false },
   ];
 
   const generation = [
@@ -82,7 +82,7 @@ export function Settings() {
   ];
 
   const logoOpts = s.assets.filter((a) => a.kind === "logo");
-  const logoId = st.logoId || logoOpts[0]?.id || "";
+  const logoId = st.logoId ?? "";
 
   const goSection = (e: React.MouseEvent<HTMLAnchorElement>, id: string) => {
     const el = document.getElementById(id);
@@ -156,17 +156,13 @@ export function Settings() {
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {integrations.map((i) => {
-              const warn = i.state !== "Connected";
               return (
                 <div key={i.plat} style={{ padding: 14, border: "1px solid var(--border)", borderRadius: "var(--r4)", background: "var(--surface)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
                     <strong style={{ fontSize: 14, fontWeight: 600 }}>{i.plat}</strong>
-                    <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: warn ? "var(--amber-bg)" : "var(--green-tint)", color: warn ? "var(--amber)" : "var(--green-text)", border: `1px solid ${warn ? "var(--amber-br)" : "var(--green-tint2)"}` }}>
-                      {i.state}
-                    </span>
                     <span style={{ flex: "1 1 auto" }} />
-                    <button type="button" onClick={() => s.toast(i.plat + " authorisation refreshed")} style={{ padding: "5px 11px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 12 }}>
-                      {warn ? "Reauthorise" : "Reconnect"}
+                    <button type="button" onClick={() => s.go("/accounts")} style={{ padding: "5px 11px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 12 }}>
+                      Manage connection
                     </button>
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
@@ -216,6 +212,7 @@ export function Settings() {
             <label style={FIELD}>
               Default brand logo
               <select value={logoId} onChange={(e) => put({ logoId: e.target.value })} style={SELECT}>
+                <option value="">{logoOpts.length ? "None selected" : "No logo assets uploaded"}</option>
                 {logoOpts.map((o) => (
                   <option key={o.id} value={o.id}>{o.name}</option>
                 ))}
@@ -247,6 +244,7 @@ export function Settings() {
                 {g.label}
                 {g.kind === "select" ? (
                   <select value={g.value} onChange={(e) => g.set(e.target.value)} style={{ ...SELECT, maxWidth: "none" }}>
+                    <option value="">None selected</option>
                     {g.opts!.map((o) => (
                       <option key={o.v} value={o.v}>{o.label}</option>
                     ))}
@@ -307,7 +305,12 @@ export function Settings() {
         {/* ---- team ---- */}
         <section id="team">
           <h2 style={H2}>Team</h2>
-          <ul style={{ listStyle: "none", margin: "0 0 14px", padding: 0, borderTop: "1px solid var(--border)" }}>
+          {s.team.length === 0 ? (
+            <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--fg2)" }}>
+              You are the only person in this workspace. Invite teammates below.
+            </p>
+          ) : null}
+          <ul style={{ listStyle: "none", margin: "0 0 14px", padding: 0, borderTop: s.team.length ? "1px solid var(--border)" : "none" }}>
             {s.team.map((m, i) => (
               <li key={m.email} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 2px", borderBottom: "1px solid var(--border)" }}>
                 <span aria-hidden style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--green-tint)", color: "var(--green-text)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 600 }}>
@@ -341,7 +344,7 @@ export function Settings() {
             <input
               value={inviteDraft}
               onChange={(e) => setInviteDraft(e.target.value)}
-              placeholder="name@reds.studio"
+              placeholder="name@company.com"
               aria-label="Invite by email"
               style={{ flex: "1 1 220px", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", fontSize: 13 }}
             />
