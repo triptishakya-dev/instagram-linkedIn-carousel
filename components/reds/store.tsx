@@ -12,7 +12,9 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
+import { listAssets } from "@/lib/api-client";
 import { EMPTY_WORKSPACE, STATES } from "@/lib/reds/data";
+import { toRedsAsset, toRedsPost } from "@/lib/reds/map";
 import { iso } from "@/lib/reds/format";
 import type {
   Asset,
@@ -68,6 +70,9 @@ interface Store {
   setAssets: React.Dispatch<React.SetStateAction<Asset[]>>;
   models: Model[];
   setModels: React.Dispatch<React.SetStateAction<Model[]>>;
+
+  /** Re-reads the library from the API — signed preview URLs expire. */
+  refreshAssets: () => Promise<void>;
 
   assetById: (id: string) => Asset | undefined;
   goalById: (id: string) => Goal | undefined;
@@ -213,6 +218,9 @@ export function RedsProvider({ children }: { children: ReactNode }) {
   const [budgetCap, setBudgetCap] = useState(4200000);
   const [vw, setVw] = useState(1440);
 
+  /** Gates the settings writer until the stored row has been read. */
+  const settingsLoaded = useRef(false);
+
   const nowRef = useRef<number | null>(null);
   const now = useSyncExternalStore(
     useCallback(() => () => {}, []),
@@ -345,7 +353,40 @@ export function RedsProvider({ children }: { children: ReactNode }) {
 
   // ---- initial API data fetch ----
   useEffect(() => {
-    fetch("/api/goals")
+    const ac = new AbortController();
+
+    listAssets(ac.signal)
+      .then((rows) => setAssets(rows.map(toRedsAsset)))
+      .catch(() => {
+        /* library stays empty; the Assets view shows its own empty state */
+      });
+
+    fetch("/api/posts?limit=100", { signal: ac.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (Array.isArray(data?.posts)) setPosts(data.posts.map(toRedsPost));
+      })
+      .catch(() => {});
+
+    fetch("/api/settings", { signal: ac.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          // A workspace that has never been saved has no row; the defaults
+          // above stand rather than being overwritten with nulls.
+          if (data.settings) setSettings((cur) => ({ ...cur, ...data.settings }));
+          if (Array.isArray(data.team)) setTeam(data.team);
+          if (typeof data.budgetCap === "number") setBudgetCap(data.budgetCap);
+        }
+      })
+      .catch(() => {})
+      // Only after the read lands may the writer run — otherwise the very
+      // first render would save the defaults back over what is stored.
+      .finally(() => {
+        settingsLoaded.current = true;
+      });
+
+    fetch("/api/goals", { signal: ac.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.goals && Array.isArray(data.goals)) {
@@ -372,7 +413,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
 
-    fetch("/api/models")
+    fetch("/api/models", { signal: ac.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.models && Array.isArray(data.models)) {
@@ -393,6 +434,33 @@ export function RedsProvider({ children }: { children: ReactNode }) {
         }
       })
       .catch(() => {});
+
+    return () => ac.abort();
+  }, []);
+
+  // ---- workspace settings: save on change, once the initial read is in ----
+  useEffect(() => {
+    if (!settingsLoaded.current) return;
+
+    const timer = setTimeout(() => {
+      fetch("/api/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ settings, team, budgetCap }),
+      }).catch(() => {
+        /* the next edit retries; nothing to surface for a preference */
+      });
+    }, 600);
+
+    return () => clearTimeout(timer);
+  }, [settings, team, budgetCap]);
+
+  const refreshAssets = useCallback(async () => {
+    try {
+      setAssets((await listAssets()).map(toRedsAsset));
+    } catch {
+      /* keep what is on screen */
+    }
   }, []);
 
   // ---- toasts ----
@@ -438,7 +506,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
   const value = useMemo<Store>(
     () => ({
       goals, setGoals, posts, setPosts, assets, setAssets, models, setModels,
-      assetById, goalById, modelById, patchPost, postsForGoal,
+      refreshAssets, assetById, goalById, modelById, patchPost, postsForGoal,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
       filterStates, setFilterStates, filterGoal, setFilterGoal,
       sort, setSort, groupBy, setGroupBy, closedGroups, setClosedGroups,
@@ -452,7 +520,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
       budgetCap, setBudgetCap, vw, now, go, filtered,
     }),
     [
-      goals, posts, assets, models, assetById, goalById, modelById, patchPost, postsForGoal,
+      goals, posts, assets, models, refreshAssets, assetById, goalById, modelById, patchPost, postsForGoal,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
       filterStates, filterGoal, sort, groupBy, closedGroups,
       page, pageSize, cols, sel, lastSel,
