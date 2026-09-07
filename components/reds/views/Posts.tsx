@@ -394,8 +394,24 @@ function PostsInner({ now }: { now: number }) {
                         >
                           <span aria-hidden style={{ width: 26, height: 33, borderRadius: "var(--r2)", border: "1px solid var(--border)", background: "var(--n100)", marginLeft: -9 }} />
                           <span aria-hidden style={{ width: 26, height: 33, borderRadius: "var(--r2)", border: "1px solid var(--border)", background: "var(--n200)", marginLeft: -9 }} />
-                          <span aria-hidden style={{ width: 26, height: 33, borderRadius: "var(--r2)", border: "1px solid var(--border-strong)", background: tint, marginLeft: -9, display: "flex", alignItems: "flex-end", padding: 2, fontSize: 9, color: "var(--fg3)", fontFamily: MONO }}>
-                            {sl.index + 1}/{p.slides.length}
+                          <span
+                            aria-hidden
+                            style={{ position: "relative", width: 26, height: 33, borderRadius: "var(--r2)", border: "1px solid var(--border-strong)", background: tint, marginLeft: -9, display: "flex", alignItems: "flex-end", padding: 2, fontSize: 9, color: "var(--fg3)", fontFamily: MONO, overflow: "hidden" }}
+                          >
+                            {/* A generated slide has a real rendered image; the
+                                tint behind it is the fallback for one that does
+                                not, so the cell never shows a broken image. */}
+                            {sl.previewUrl ? (
+                              <img
+                                src={sl.previewUrl}
+                                alt=""
+                                loading="lazy"
+                                style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                              />
+                            ) : null}
+                            <span style={{ position: "relative", textShadow: sl.previewUrl ? "0 1px 2px rgba(0,0,0,.8)" : "none", color: sl.previewUrl ? "#fff" : "var(--fg3)" }}>
+                              {sl.index + 1}/{p.slides.length}
+                            </span>
                           </span>
                           <span style={{ marginLeft: 7, fontSize: 11, color: "var(--fg3)", fontFamily: MONO }}>
                             {p.slides.length > 3 ? "+" + (p.slides.length - 3) : ""}
