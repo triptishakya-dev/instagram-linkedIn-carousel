@@ -21,6 +21,15 @@ export class ApiError extends Error {
     message: string,
     /** Form field this belongs to, so the composer can render it inline. */
     readonly field?: string,
+    /**
+     * Structured extras for a client that can act on more than the sentence.
+     *
+     * A conflict is the case in point: "3 goals use this model" is enough to
+     * render a warning, but naming the three lets the user recognise what they
+     * are about to change. Safe to echo because only the route decides what
+     * goes in here.
+     */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "ApiError";
@@ -32,7 +41,13 @@ export function badRequest(message: string, field?: string) {
 }
 
 type ErrorBody = {
-  error: { code: ApiErrorCode; message: string; field?: string; issues?: unknown };
+  error: {
+    code: ApiErrorCode;
+    message: string;
+    field?: string;
+    issues?: unknown;
+    details?: Record<string, unknown>;
+  };
 };
 
 /**
@@ -43,7 +58,14 @@ type ErrorBody = {
 export function toErrorResponse(err: unknown): NextResponse<ErrorBody> {
   if (err instanceof ApiError) {
     return NextResponse.json(
-      { error: { code: err.code, message: err.message, field: err.field } },
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          field: err.field,
+          details: err.details,
+        },
+      },
       { status: err.status },
     );
   }
