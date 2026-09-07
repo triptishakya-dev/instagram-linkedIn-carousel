@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   CopyObjectCommand,
   DeleteObjectsCommand,
+  GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -9,19 +10,29 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 import {
+  ALLOWED_ASSET_MIME,
   ALLOWED_IMAGE_MIME,
+  MAX_ASSET_BYTES,
   MAX_UPLOAD_BYTES,
+  extensionForAssetMime,
   extensionForMime,
+  isAllowedAssetMime,
   isAllowedImageMime,
+  type AllowedAssetMime,
   type AllowedImageMime,
 } from "./media";
 
 // Re-exported so server code has one import for everything storage-related.
 export {
+  ALLOWED_ASSET_MIME,
   ALLOWED_IMAGE_MIME,
+  MAX_ASSET_BYTES,
   MAX_UPLOAD_BYTES,
+  extensionForAssetMime,
   extensionForMime,
+  isAllowedAssetMime,
   isAllowedImageMime,
+  type AllowedAssetMime,
   type AllowedImageMime,
 };
 
@@ -83,8 +94,8 @@ export function resetS3Client() {
  * expiring the `tmp/` prefix after a day collects abandoned composer sessions,
  * so nothing here needs cleaning up by hand.
  */
-export function buildTmpKey(userId: string, mime: AllowedImageMime): string {
-  return `tmp/${userId}/${randomUUID()}.${extensionForMime(mime)}`;
+export function buildTmpKey(userId: string, mime: AllowedAssetMime): string {
+  return `tmp/${userId}/${randomUUID()}.${extensionForAssetMime(mime)}`;
 }
 
 /** Final resting place, once the post row exists to name it. */
@@ -95,6 +106,15 @@ export function buildPostKey(
   mime: AllowedImageMime,
 ): string {
   return `posts/${userId}/${postId}/${order}.${extensionForMime(mime)}`;
+}
+
+/** Where a file lands once it is a row in the asset library. */
+export function buildAssetKey(
+  userId: string,
+  assetId: string,
+  mime: AllowedAssetMime,
+): string {
+  return `assets/${userId}/${assetId}.${extensionForAssetMime(mime)}`;
 }
 
 /**
@@ -129,6 +149,36 @@ export async function presignPut(key: string, contentType: AllowedImageMime): Pr
     new PutObjectCommand({ Bucket: bucketName(), Key: key, ContentType: contentType }),
     { expiresIn: PRESIGN_EXPIRY_SECONDS },
   );
+}
+
+/**
+ * Same as `presignPut`, but for the wider set of types the asset library
+ * accepts. Kept separate so a caller cannot accidentally sign a video upload
+ * for a post, where only images are publishable.
+ */
+export async function presignAssetPut(
+  key: string,
+  contentType: AllowedAssetMime,
+): Promise<string> {
+  return getSignedUrl(
+    s3(),
+    new PutObjectCommand({ Bucket: bucketName(), Key: key, ContentType: contentType }),
+    { expiresIn: PRESIGN_EXPIRY_SECONDS },
+  );
+}
+
+/** How long a preview URL handed to the browser stays valid. */
+export const PREVIEW_EXPIRY_SECONDS = 3600;
+
+/**
+ * A short-lived read URL. The bucket is private, so library previews are
+ * signed per request rather than stored — which is why `Asset` persists the
+ * object key and not a URL.
+ */
+export async function presignGet(key: string): Promise<string> {
+  return getSignedUrl(s3(), new GetObjectCommand({ Bucket: bucketName(), Key: key }), {
+    expiresIn: PREVIEW_EXPIRY_SECONDS,
+  });
 }
 
 export type ObjectHead = { contentType: string | undefined; contentLength: number };
