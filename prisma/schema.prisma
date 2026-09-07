@@ -68,6 +68,13 @@ enum ModelRole {
   BOTH
 }
 
+enum AssetKind {
+  IMAGE
+  LOGO
+  VIDEO
+  DOCUMENT
+}
+
 // ==========================================
 // Authentication & User Models (Auth.js)
 // ==========================================
@@ -85,6 +92,8 @@ model User {
   posts          Post[]
   goals          Goal[]
   aiModels       AiModel[]
+  assets         Asset[]
+  workspace      WorkspaceSetting?
 
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -252,6 +261,54 @@ model AiModel {
 
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
+}
+
+// ==========================================
+// Uploaded Asset Library
+// ==========================================
+
+/// A file the user uploaded, living in S3 under `assets/{userId}/`.
+///
+/// `storageKey` is the object key rather than a URL: the bucket is private, so
+/// every read is a freshly signed GET. Storing a URL would bake in an expiry.
+model Asset {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  kind       AssetKind @default(IMAGE)
+  mimeType   String
+  sizeBytes  Int
+  width      Int?
+  height     Int?
+  tags       String[]
+  storageKey String    @unique
+  uploadedBy String?
+
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+// ==========================================
+// Workspace Preferences
+// ==========================================
+
+/// Everything the Settings view edits, kept as one row per user. The shape is
+/// driven entirely by the client form, so it is stored as JSON rather than
+/// mirrored into columns that would need a migration per new toggle.
+model WorkspaceSetting {
+  userId    String   @id
+  settings  Json
+  team      Json     @default("[]")
+  budgetCap Int      @default(4200000)
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model PostMedia {
