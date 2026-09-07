@@ -13,6 +13,7 @@ import {
   headObject,
   isAllowedImageMime,
   isOwnedTmpKey,
+  presignGet,
   publicUrlFor,
   type AllowedImageMime,
 } from "@/lib/s3";
@@ -265,8 +266,26 @@ export async function GET(req: Request) {
     const hasMore = posts.length > limit;
     const page = hasMore ? posts.slice(0, limit) : posts;
 
+    // Objects under `posts/` are not publicly readable on this bucket, so the
+    // stored `url` cannot be rendered directly. Each row gets a signed preview
+    // instead, the same way the asset library does -- see `serializeAssets`.
+    const serialized = await Promise.all(
+      page.map(async (post) => ({
+        ...post,
+        media: await Promise.all(
+          post.media.map(async (m) => ({
+            ...m,
+            // One unreadable object should not blank the whole table.
+            previewUrl: m.storageKey
+              ? await presignGet(m.storageKey).catch(() => null)
+              : null,
+          })),
+        ),
+      })),
+    );
+
     return NextResponse.json({
-      posts: page,
+      posts: serialized,
       nextCursor: hasMore ? page[page.length - 1]?.id : null,
     });
   } catch (err) {
