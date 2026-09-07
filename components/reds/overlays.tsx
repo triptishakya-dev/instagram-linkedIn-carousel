@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { PILL, STATES, TINTS } from "@/lib/reds/data";
 import { MONO, absDT, fmtBytes, inr, iso } from "@/lib/reds/format";
-import { useReds, seg } from "./store";
+import { CURRENT_USER, useReds, seg } from "./store";
 import type { Asset, Model, ModelRole } from "@/lib/reds/types";
 
 const SCRIM: React.CSSProperties = {
@@ -408,7 +408,7 @@ export function useAssetIngest() {
             height: 1350,
             tags: ["upload"],
             usedInPostIds: [],
-            uploadedBy: "Ananya R",
+            uploadedBy: CURRENT_USER,
             uploadedAt: iso(Date.now()),
             tint: TINTS[Math.floor(Math.random() * TINTS.length)],
             previewUrl: URL.createObjectURL(u.file),
