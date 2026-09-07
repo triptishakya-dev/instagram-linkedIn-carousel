@@ -13,8 +13,19 @@ import {
 import { updateGoalSchema } from "@/lib/validation/goal";
 
 /**
- * GET /api/goals/[id]
+ * Resolves a goal the caller owns, or throws.
+ *
+ * Someone else's id yields the same 404 as one that does not exist — a 403
+ * would confirm the row is real to a caller who has no business knowing.
  */
+async function ownedGoal(id: string) {
+  const userId = await getCurrentUserId();
+  const goal = await prisma.goal.findFirst({ where: { id, userId } });
+  if (!goal) throw new ApiError(404, "NOT_FOUND", "Goal not found.");
+  return { userId, goal };
+}
+
+/** GET /api/goals/[id] */
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -47,16 +58,8 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const userId = await getCurrentUserId();
     const { id } = await params;
-
-    const existing = await prisma.goal.findFirst({
-      where: { id, userId },
-    });
-
-    if (!existing) {
-      throw new ApiError(404, "NOT_FOUND", "Goal not found.");
-    }
+    const { userId, goal: existing } = await ownedGoal(id);
 
     const body = updateGoalSchema.parse(await readJson(req));
     let logoAssetId = body.brandLogoAssetId !== undefined ? body.brandLogoAssetId : existing.brandLogoAssetId;
@@ -112,26 +115,60 @@ export async function PUT(
 
 /**
  * DELETE /api/goals/[id]
+ *
+ * `Post.goalId` is `onDelete: SetNull`, so the posts a goal produced outlive
+ * it — which is the intent for anything already drafted or published, but not
+ * obviously so for one still scheduled: it would fire on its own later with no
+ * goal left to explain where it came from. A scheduled post therefore makes
+ * this a 409 unless `?force=true` says to go ahead and detach it.
+ *
+ * Force leaves those posts scheduled rather than demoting them. Unlike an
+ * account disconnect, nothing they need has gone away — the caption, media and
+ * targets are all still there, so the post can still publish exactly as the
+ * user set it up to.
  */
 export async function DELETE(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const userId = await getCurrentUserId();
     const { id } = await params;
+    const { userId, goal } = await ownedGoal(id);
 
-    const existing = await prisma.goal.findFirst({
-      where: { id, userId },
+    const force = new URL(req.url).searchParams.get("force") === "true";
+
+    const result = await prisma.$transaction(async (tx) => {
+      const scheduled = await tx.post.findMany({
+        where: { userId, goalId: id, status: "SCHEDULED" },
+        select: { id: true, scheduledAt: true },
+        orderBy: { scheduledAt: "asc" },
+      });
+
+      if (!force && scheduled.length > 0) {
+        // The posts ride along in `details` so the confirmation can name them
+        // rather than only counting them.
+        throw new ApiError(
+          409,
+          "CONFLICT",
+          `${scheduled.length} scheduled ${scheduled.length === 1 ? "post comes" : "posts come"} from ${goal.name}. ` +
+            `Deleting it leaves ${scheduled.length === 1 ? "that post" : "those posts"} in the queue with no goal — ` +
+            "delete anyway to detach them.",
+          undefined,
+          { posts: scheduled },
+        );
+      }
+
+      // Every post of this goal loses its `goalId`, not just the scheduled
+      // ones. Counted before the delete: the foreign key is what clears the
+      // column, and it leaves nothing behind to count afterwards.
+      const detachedPostCount = await tx.post.count({ where: { userId, goalId: id } });
+
+      await tx.goal.delete({ where: { id } });
+
+      return { detachedPostCount, detachedScheduledCount: scheduled.length };
     });
 
-    if (!existing) {
-      throw new ApiError(404, "NOT_FOUND", "Goal not found.");
-    }
-
-    await prisma.goal.delete({ where: { id } });
-
-    return NextResponse.json({ success: true, deletedId: id });
+    return NextResponse.json({ success: true, deletedId: id, ...result });
   } catch (err) {
     return toErrorResponse(err);
   }
