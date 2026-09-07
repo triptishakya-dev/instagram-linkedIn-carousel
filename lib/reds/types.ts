@@ -77,6 +77,15 @@ export interface Slide {
   headline: string;
   body: string;
   layout: SlideLayout;
+  /**
+   * Signed URL for the rendered image, when one exists.
+   *
+   * Generated slides are real objects in S3; hand-composed ones have no image
+   * yet, so views fall back to the placeholder tint when this is absent.
+   */
+  previewUrl?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface Version {
