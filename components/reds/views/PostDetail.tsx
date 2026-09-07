@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { PILL, STATES } from "@/lib/reds/data";
 import { MONO, inr, iso, num } from "@/lib/reds/format";
+import { EmptyState } from "../charts";
 import { useReds } from "../store";
 import type { Post, SlideLayout } from "@/lib/reds/types";
 
@@ -42,13 +43,19 @@ export function PostDetail({ id }: { id: string }) {
   const [tagDraft, setTagDraft] = useState("");
   const [dragFrom, setDragFrom] = useState<number | null>(null);
 
-  const streamRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => () => { if (streamRef.current) clearInterval(streamRef.current); }, []);
+  if (!post) {
+    return (
+      <EmptyState
+        title="That post is not in this workspace"
+        body="It may have been deleted, or the link points at a post from another session."
+        actionLabel="Back to posts"
+        onAction={() => s.go("/posts")}
+      />
+    );
+  }
 
-  if (!post) return null;
-
-  const goal = s.goalById(post.goalId)!;
-  const model = s.modelById(post.usage.modelId)!;
+  const goal = s.goalById(post.goalId);
+  const model = s.modelById(post.usage.modelId);
   const st = STATES[post.state];
   const pill = PILL[st.t];
   const tok = post.usage.inputTokens + post.usage.outputTokens;
@@ -74,8 +81,8 @@ export function PostDetail({ id }: { id: string }) {
     headSize: sl.layout === "statement" ? 32 : 24,
   };
 
-  const promptText = promptDraft != null ? promptDraft : goal.captionPrompt;
-  const overridden = promptDraft != null && promptDraft !== goal.captionPrompt;
+  const promptText = promptDraft != null ? promptDraft : (goal?.captionPrompt ?? "");
+  const overridden = promptDraft != null && promptDraft !== (goal?.captionPrompt ?? "");
 
   const meters = [
     { value: num(tok), label: "tokens total" },
@@ -84,102 +91,19 @@ export function PostDetail({ id }: { id: string }) {
     { value: String(post.usage.runs), label: post.usage.runs === 1 ? "run" : "runs" },
   ];
 
-  /** Streams a regenerated headline + body into the current slide. */
+  /**
+   * Runs the prompt for the current scope. The provider call is not wired yet,
+   * so this reports why nothing happened rather than inventing slide copy.
+   */
   const generate = () => {
     if (streaming) return;
-    setStreaming(true);
-    setGenError(null);
     setGenRaw("");
-    setGenStatus("Generating — streaming into slide " + (idx + 1) + ".");
-
-    // The brief calls a model here; without one it falls back to a seeded
-    // response so the console still demonstrates the streaming path.
-    const raw = JSON.stringify({
-      slides: [
-        {
-          index: idx,
-          layout: sl.layout,
-          headline: "The seam is the whole design",
-          body: "A 4 mm reveal hides sixty sensors, the wiring loom and two years of arguments about tolerance.",
-        },
-      ],
-      caption: "A 4 mm reveal hides sixty sensors and the entire wiring loom. Project notes in the comments.",
-      hashtags: ["#experientialdesign", "#fabrication", "#tolerance"],
-    });
-    setGenStatus("Generating with seeded output — the live model is unavailable.");
-
-    let parsed: { slides: { headline?: string; body?: string }[]; caption?: string; hashtags?: string[] };
-    try {
-      parsed = JSON.parse(raw);
-      if (!parsed || !Array.isArray(parsed.slides)) throw new Error("shape");
-    } catch {
-      setStreaming(false);
-      setGenRaw(raw);
-      setGenStatus("");
-      setGenError("Generation failed — the model returned invalid JSON. Retry, or view the raw response.");
-      return;
-    }
-
-    const targetHead = String(parsed.slides[0].headline || "").slice(0, 90);
-    const targetBody = String(parsed.slides[0].body || "").slice(0, 260);
-
-    let i = 0;
-    if (streamRef.current) clearInterval(streamRef.current);
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-    const step = () => {
-      i += reduce ? 999 : 4;
-      const h = targetHead.slice(0, Math.min(i, targetHead.length));
-      const b = i > targetHead.length ? targetBody.slice(0, i - targetHead.length) : "";
-      s.setPosts((ps) =>
-        ps.map((p) =>
-          p.id !== post.id ? p : { ...p, slides: p.slides.map((x, k) => (k === idx ? { ...x, headline: h, body: b } : x)) },
-        ),
-      );
-
-      if (i >= targetHead.length + targetBody.length) {
-        if (streamRef.current) clearInterval(streamRef.current);
-        const cost = 0.42 + Math.random() * 0.6;
-        setStreaming(false);
-        setCfKey((k) => k + 1);
-        setGenStatus("Slide " + (idx + 1) + " regenerated. " + num(920) + " tokens, est. " + inr(cost * 1000) + ".");
-        s.setPosts((ps) =>
-          ps.map((p) =>
-            p.id !== post.id
-              ? p
-              : {
-                  ...p,
-                  caption: scope === "caption" && parsed.caption ? parsed.caption : p.caption,
-                  hashtags: scope === "caption" && parsed.hashtags ? parsed.hashtags : p.hashtags,
-                  usage: {
-                    ...p.usage,
-                    runs: p.usage.runs + 1,
-                    inputTokens: p.usage.inputTokens + 620,
-                    outputTokens: p.usage.outputTokens + 300,
-                    estimatedCostInr: p.usage.estimatedCostInr + cost * 1000,
-                  },
-                  versions: [
-                    ...p.versions,
-                    {
-                      id: "v" + (p.versions.length + 1),
-                      label: "Run " + (p.versions.length + 1),
-                      scope: scope === "slide" ? "this slide" : scope === "all" ? "all slides" : "caption only",
-                      createdAt: iso(Date.now()),
-                      modelId: p.usage.modelId,
-                      tokens: 920,
-                      cost: cost * 1000,
-                      note: "Regenerated from the console.",
-                      headline: targetHead,
-                      body: targetBody,
-                    },
-                  ],
-                  updatedAt: iso(Date.now()),
-                },
-          ),
-        );
-      }
-    };
-    streamRef.current = setInterval(step, reduce ? 0 : 26);
+    setGenStatus("");
+    setGenError(
+      model
+        ? "Generation is not connected yet. Wire a provider in Accounts to run this prompt."
+        : "No model is configured for this post. Add one in Accounts, then set it on the goal.",
+    );
   };
 
   const patchSlides = (fn: (p: Post) => Post["slides"]) =>
@@ -211,9 +135,13 @@ export function PostDetail({ id }: { id: string }) {
       {/* ---- header strip ---- */}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 20, paddingBottom: 12, borderBottom: "1px solid var(--border-strong)" }}>
         <span style={{ fontFamily: MONO, fontSize: 14 }}>{post.id}</span>
-        <button type="button" onClick={() => s.go(`/goals/${goal.id}`)} style={{ border: 0, background: "transparent", padding: 0, fontSize: 13, color: "var(--green-text)" }}>
-          {goal.name}
-        </button>
+        {goal ? (
+          <button type="button" onClick={() => s.go(`/goals/${goal.id}`)} style={{ border: 0, background: "transparent", padding: 0, fontSize: 13, color: "var(--green-text)" }}>
+            {goal.name}
+          </button>
+        ) : (
+          <span style={{ fontSize: 13, color: "var(--fg3)" }}>No goal</span>
+        )}
         <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: pill.bg, color: pill.fg, border: `1px solid ${pill.br}` }}>{st.l}</span>
         <span style={{ flex: "1 1 auto" }} />
         {meters.map((m) => (
@@ -419,24 +347,26 @@ export function PostDetail({ id }: { id: string }) {
               {streaming ? (
                 <button
                   type="button"
-                  onClick={() => { if (streamRef.current) clearInterval(streamRef.current); setStreaming(false); setGenStatus("Run cancelled. The slide keeps whatever landed."); }}
+                  onClick={() => { setStreaming(false); setGenStatus("Run cancelled. The slide keeps whatever landed."); }}
                   style={{ padding: "7px 12px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 12 }}
                 >
                   Cancel
                 </button>
               ) : null}
               <span style={{ fontSize: 12, color: "var(--fg2)" }}>
-                est. {inr((scope === "all" ? post.slides.length : 1) * 420)} — {model.label}
+                {model ? `est. ${inr((scope === "all" ? post.slides.length : 1) * 420)} — ${model.label}` : "No model set on this goal"}
               </span>
             </div>
             <p aria-live="polite" style={{ margin: "10px 0 0", fontSize: 12, color: "var(--fg2)", minHeight: 18 }}>{genStatus}</p>
             {genError ? (
               <div style={{ marginTop: 10, padding: 10, border: "1px solid var(--red-br)", borderRadius: "var(--r3)", background: "var(--red-bg)" }}>
                 <p style={{ margin: "0 0 6px", fontSize: 13, color: "var(--red)" }}>{genError}</p>
-                <details>
-                  <summary style={{ fontSize: 12, color: "var(--fg2)", cursor: "pointer" }}>View the raw response</summary>
-                  <pre style={{ margin: "8px 0 0", maxHeight: 140, overflow: "auto", fontFamily: MONO, fontSize: 11, color: "var(--fg2)", whiteSpace: "pre-wrap" }}>{genRaw}</pre>
-                </details>
+                {genRaw ? (
+                  <details>
+                    <summary style={{ fontSize: 12, color: "var(--fg2)", cursor: "pointer" }}>View the raw response</summary>
+                    <pre style={{ margin: "8px 0 0", maxHeight: 140, overflow: "auto", fontFamily: MONO, fontSize: 11, color: "var(--fg2)", whiteSpace: "pre-wrap" }}>{genRaw}</pre>
+                  </details>
+                ) : null}
               </div>
             ) : null}
           </div>
