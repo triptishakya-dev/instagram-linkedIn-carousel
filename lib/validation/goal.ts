@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { promptField } from "./prompt";
 
 export const goalScheduleSchema = z.object({
   cadence: z
@@ -19,8 +20,8 @@ export const createGoalSchema = z.object({
     .transform((list) => [...new Set(list.map((p) => p.toUpperCase() as "INSTAGRAM" | "LINKEDIN"))]),
   brandLogoAssetId: z.string().nullish(),
   logoKey: z.string().nullish(), // S3 tmp/ key if a new logo was uploaded
-  captionPrompt: z.string().max(4000).nullish(),
-  imagePrompt: z.string().max(4000).nullish(),
+  captionPrompt: promptField("Caption prompt"),
+  imagePrompt: promptField("Image prompt"),
   startDate: z.string().min(1, "Start date is required."),
   endDate: z.string().nullish(),
   schedule: goalScheduleSchema,
