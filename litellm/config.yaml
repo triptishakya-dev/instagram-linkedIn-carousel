@@ -1,0 +1,83 @@
+# LiteLLM proxy — one OpenAI-compatible endpoint in front of every provider.
+#
+# `model_name` is the contract with the app: it is exactly what goes into
+# `AiModel.apiModelId`, and what the generation activities send as `model`.
+# Keys never leave this container.
+#
+# Entries whose provider key is absent from .env stay listed but fail at call
+# time rather than at boot, so an unconfigured provider does not stop the proxy
+# serving the ones that are configured.
+#
+# Every Gemini entry below was verified against the project's own key with
+# `models.list` + a live call. Two traps found doing that, both load-bearing:
+#
+#   1. `gemini-2.5-flash` still appears in `models.list` but 404s on call:
+#      "no longer available to new users". Listing a model is not access to it.
+#   2. Imagen is not reachable at all on this key — the only `predict`-capable
+#      models it can see are Veo video ones. Gemini image generation happens
+#      through `generateContent` on the `*-image` models instead, so the
+#      slide pipeline calls those directly rather than through this proxy's
+#      /v1/images/generations route, which targets Imagen predict.
+
+model_list:
+  # ---- Google text (captions, topic derivation) ----
+  # Alias names track Google's current release, so a retirement like the one
+  # above does not silently break generation.
+  - model_name: gemini-flash-latest
+    litellm_params:
+      model: gemini/gemini-flash-latest
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gemini-pro-latest
+    litellm_params:
+      model: gemini/gemini-pro-latest
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: gemini/gemini-3.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  # ---- Google image (slide rendering) ----
+  # Listed so /v1/models advertises them and an AiModel row can name one;
+  # the image activity calls Gemini directly for the inline image bytes.
+  - model_name: gemini-3-pro-image
+    litellm_params:
+      model: gemini/gemini-3-pro-image
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gemini-2.5-flash-image
+    litellm_params:
+      model: gemini/gemini-2.5-flash-image
+      api_key: os.environ/GEMINI_API_KEY
+
+  # ---- OpenAI (needs OPENAI_API_KEY) ----
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ---- Anthropic (needs ANTHROPIC_API_KEY) ----
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+litellm_settings:
+  set_verbose: false
+  # Providers disagree on which sampling knobs exist; dropping unsupported ones
+  # keeps a single caption call working across all three.
+  drop_params: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
