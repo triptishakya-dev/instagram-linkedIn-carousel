@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "worker": "tsx worker/start-content-worker.ts",
     "worker:image": "node scripts/run-worker.mjs",
     "worker:image:raw": "ts-node worker/start-worker.ts",
     "worker:logs": "node scripts/worker-logs.mjs",
