@@ -12,6 +12,8 @@ export type ApiErrorPayload = {
   code: string;
   message: string;
   field?: string;
+  /** Route-supplied extras; see `ApiError` in `lib/http.ts`. */
+  details?: Record<string, unknown>;
 };
 
 export class ApiClientError extends Error {
@@ -25,6 +27,10 @@ export class ApiClientError extends Error {
 
   get field() {
     return this.payload.field;
+  }
+
+  get details() {
+    return this.payload.details;
   }
 }
 
@@ -322,4 +328,196 @@ export async function updateAsset(
 export async function deleteAsset(id: string): Promise<void> {
   const res = await fetch(`/api/assets/${id}`, { method: "DELETE" });
   if (!res.ok) await readError(res);
+}
+
+/* ------------------------------------------------------------------ models -- */
+
+export type ModelRoleWire = "CAPTION" | "SLIDES" | "BOTH";
+
+export type ModelRecord = {
+  id: string;
+  label: string;
+  provider: string;
+  role: ModelRoleWire;
+  inputPricePerMTokInr: number;
+  outputPricePerMTokInr: number;
+  maxTokens: number;
+  temperature: number;
+  enabled: boolean;
+  keyLast4: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateModelBody = {
+  label: string;
+  provider: string;
+  role: ModelRoleWire;
+  inputPricePerMTokInr: number;
+  outputPricePerMTokInr: number;
+  maxTokens: number;
+  temperature: number;
+  enabled: boolean;
+  key?: string | null;
+};
+
+/** Every field is optional; only what is sent is written. */
+export type UpdateModelBody = Partial<CreateModelBody>;
+
+export async function listModels(signal?: AbortSignal): Promise<ModelRecord[]> {
+  const res = await fetch("/api/models", { signal });
+  if (!res.ok) await readError(res);
+  return (await res.json()).models;
+}
+
+export async function createModel(body: CreateModelBody): Promise<ModelRecord> {
+  const res = await fetch("/api/models", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await readError(res);
+  return res.json();
+}
+
+export async function updateModel(id: string, patch: UpdateModelBody): Promise<ModelRecord> {
+  const res = await fetch(`/api/models/${id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) await readError(res);
+  return res.json();
+}
+
+/** A goal that names the model, as reported on a 409. */
+export type BlockingGoal = { id: string; name: string };
+
+export type DeleteModelResult = {
+  deletedId: string;
+  /** Goals whose `modelId` was blanked — includes paused and ended ones. */
+  clearedGoalCount: number;
+  /** Workspace settings keys that had named this model. */
+  clearedDefaults: string[];
+};
+
+/**
+ * Reads the goal list off a 409 from `deleteModel`, or `[]` if the refusal
+ * came without one.
+ */
+export function blockingGoalsOf(err: unknown): BlockingGoal[] {
+  if (!(err instanceof ApiClientError) || err.status !== 409) return [];
+  const goals = err.details?.goals;
+  if (!Array.isArray(goals)) return [];
+  return goals.filter(
+    (g): g is BlockingGoal =>
+      !!g && typeof g === "object" && typeof g.id === "string" && typeof g.name === "string",
+  );
+}
+
+/**
+ * Refused with a 409 while an active goal still names the model, so the user
+ * finds out before their next scheduled run has nothing to generate with; the
+ * offending goals come back in `details.goals` — read them with
+ * `blockingGoalsOf`. `force` accepts the refusal and clears the reference on
+ * those goals, and on any workspace default naming the model, instead.
+ */
+export async function deleteModel(
+  id: string,
+  opts: { force?: boolean } = {},
+): Promise<DeleteModelResult> {
+  const query = opts.force ? "?force=true" : "";
+  const res = await fetch(`/api/models/${id}${query}`, { method: "DELETE" });
+  if (!res.ok) await readError(res);
+  return res.json();
+}
+
+/* ------------------------------------------------------------------- goals -- */
+
+/** A scheduled post that would be detached, as reported on a 409. */
+export type BlockingPost = { id: string; scheduledAt: string | null };
+
+export type DeleteGoalResult = {
+  deletedId: string;
+  /** Posts whose `goalId` was cleared — every status, not only scheduled. */
+  detachedPostCount: number;
+  /** How many of those were still scheduled to publish. */
+  detachedScheduledCount: number;
+};
+
+/**
+ * Reads the scheduled-post list off a 409 from `deleteGoal`, or `[]` if the
+ * refusal came without one.
+ */
+export function blockingPostsOf(err: unknown): BlockingPost[] {
+  if (!(err instanceof ApiClientError) || err.status !== 409) return [];
+  const posts = err.details?.posts;
+  if (!Array.isArray(posts)) return [];
+  return posts.filter((p): p is BlockingPost => !!p && typeof p === "object" && typeof p.id === "string");
+}
+
+/**
+ * Refused with a 409 while a scheduled post still comes from the goal, since
+ * deleting it would leave that post to fire with no goal behind it; the posts
+ * come back in `details.posts` — read them with `blockingPostsOf`. `force`
+ * accepts the refusal and detaches them, leaving them scheduled.
+ */
+export async function deleteGoal(
+  id: string,
+  opts: { force?: boolean } = {},
+): Promise<DeleteGoalResult> {
+  const query = opts.force ? "?force=true" : "";
+  const res = await fetch(`/api/goals/${id}${query}`, { method: "DELETE" });
+  if (!res.ok) await readError(res);
+  return res.json();
+}
+
+/* ---------------------------------------------------- connected accounts -- */
+
+export type SocialTargetRecord = {
+  id: string;
+  platform: "INSTAGRAM" | "LINKEDIN";
+  targetType: string;
+  name: string;
+  username: string | null;
+  avatarUrl: string | null;
+  isDefault: boolean;
+};
+
+export type SocialAccountRecord = {
+  id: string;
+  platform: "INSTAGRAM" | "LINKEDIN";
+  name: string | null;
+  username: string | null;
+  avatarUrl: string | null;
+  isValid: boolean;
+  tokenExpiresAt: string | null;
+  lastSyncAt: string | null;
+  createdAt: string;
+  targets: SocialTargetRecord[];
+  /** Scheduled posts that would lose a destination if this were disconnected. */
+  scheduledPostCount: number;
+};
+
+export async function listAccounts(signal?: AbortSignal): Promise<SocialAccountRecord[]> {
+  const res = await fetch("/api/accounts", { signal });
+  if (!res.ok) await readError(res);
+  return (await res.json()).accounts;
+}
+
+export type DisconnectResult = { deletedId: string; draftedPostCount: number };
+
+/**
+ * Refused with a 409 while a scheduled post still targets the account, since
+ * the delete cascades that post's publish rows away. `force` accepts it and
+ * moves any post left with no destination back to drafts.
+ */
+export async function deleteAccount(
+  id: string,
+  opts: { force?: boolean } = {},
+): Promise<DisconnectResult> {
+  const query = opts.force ? "?force=true" : "";
+  const res = await fetch(`/api/accounts/${id}${query}`, { method: "DELETE" });
+  if (!res.ok) await readError(res);
+  return res.json();
 }
