@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ALLOWED_IMAGE_MIME, MAX_UPLOAD_BYTES } from "../media";
 import { isValidTimeZone } from "../tz";
+import { promptField } from "./prompt";
 
 /** Provider caption ceilings. Enforced per selected platform, not globally. */
 export const IG_CAPTION_MAX = 2200;
@@ -19,7 +20,7 @@ export type PresignRequest = z.infer<typeof presignRequestSchema>;
 
 export const createPostSchema = z.object({
   caption: z.string().trim().min(1, "Caption text field is required.").max(LI_COMMENTARY_MAX),
-  captionPrompt: z.string().max(4000).nullish(),
+  captionPrompt: promptField("Caption prompt"),
   platforms: z
     .array(z.enum(["INSTAGRAM", "LINKEDIN"]))
     .min(1, "Pick at least one destination.")
@@ -39,7 +40,7 @@ export type CreatePostInput = z.infer<typeof createPostSchema>;
 export const updatePostSchema = z
   .object({
     caption: z.string().trim().min(1).max(LI_COMMENTARY_MAX),
-    captionPrompt: z.string().max(4000).nullish(),
+    captionPrompt: promptField("Caption prompt"),
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     time: z.string().regex(/^\d{2}:\d{2}$/),
     timezone: z.string().refine(isValidTimeZone),
