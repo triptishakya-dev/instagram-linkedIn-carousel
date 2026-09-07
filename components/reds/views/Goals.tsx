@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import {
+  ApiClientError,
+  blockingPostsOf,
+  deleteGoal,
+  type BlockingPost,
+  type DeleteGoalResult,
+} from "@/lib/api-client";
 import { PILL } from "@/lib/reds/data";
 import { MONO, absDT, inr, relDT } from "@/lib/reds/format";
 import { EmptyState } from "../charts";
@@ -15,6 +22,17 @@ const CAD: Record<string, string> = {
 };
 
 const SPILL: Record<Goal["status"], "g" | "n"> = { active: "g", paused: "n", ended: "n" };
+
+/**
+ * Goal ids with a delete in flight.
+ *
+ * Module scope rather than a ref: the guard has to be readable synchronously
+ * from the confirm dialog's callback, and that callback is built into the
+ * `actions` array during render — reading a ref from there trips the refs
+ * rule, which cannot see that the closure only ever runs from a click. The
+ * `deleting` state below is what actually drives the rendering.
+ */
+const inFlightDeletes = new Set<string>();
 
 const HEADERS: { label: string; align: "left" | "right" }[] = [
   { label: "Name", align: "left" },
@@ -72,6 +90,95 @@ function GoalsInner({ now }: { now: number }) {
     s.go("/goals/new");
   };
 
+  /** Rows with a delete in flight, so each can show its own progress. */
+  const [deleting, setDeleting] = useState<Record<string, boolean>>({});
+
+  const deleteSummary = (g: Goal, r: DeleteGoalResult) => {
+    if (r.detachedPostCount === 0) return `${g.name} deleted`;
+
+    const posts = `${r.detachedPostCount} post${r.detachedPostCount === 1 ? "" : "s"}`;
+    const still = r.detachedScheduledCount > 0
+      ? `, ${r.detachedScheduledCount} still scheduled`
+      : "";
+    return `${g.name} deleted — ${posts} kept${still}`;
+  };
+
+  const runDelete = async (g: Goal, force: boolean) => {
+    // The confirm dialog stays open until the request lands, so a second
+    // click would arrive before a state update could disable anything.
+    if (inFlightDeletes.has(g.id)) return;
+    inFlightDeletes.add(g.id);
+    setDeleting((d) => ({ ...d, [g.id]: true }));
+
+    try {
+      const result = await deleteGoal(g.id, { force });
+      s.ask(null);
+      // Only now: the row stays on screen until the server has actually
+      // dropped it, so a failed delete does not read as a successful one.
+      s.setGoals((gs) => gs.filter((x) => x.id !== g.id));
+      s.setPosts((ps) => ps.map((p) => (p.goalId === g.id ? { ...p, goalId: "" } : p)));
+      if (s.filterGoal === g.id) s.setFilterGoal("all");
+      s.toast(deleteSummary(g, result));
+    } catch (err) {
+      const blocking = blockingPostsOf(err);
+
+      if (blocking.length > 0) {
+        // The store's post list was behind the database. Ask again with what
+        // the server reports rather than forcing past a warning never shown.
+        askDelete(g, blocking);
+        return;
+      }
+
+      s.ask(null);
+      s.toast(err instanceof ApiClientError ? err.message : `Could not delete ${g.name}.`);
+    } finally {
+      inFlightDeletes.delete(g.id);
+      setDeleting((d) => {
+        const next = { ...d };
+        delete next[g.id];
+        return next;
+      });
+    }
+  };
+
+  /**
+   * `blocking` is the server's list, passed only when a 409 has already come
+   * back. Otherwise the posts on screen are what the dialog describes, and the
+   * server gets the final say when the request goes out.
+   */
+  const askDelete = (g: Goal, blocking?: BlockingPost[]) => {
+    const mine = s.postsForGoal(g.id);
+    const scheduled =
+      blocking ??
+      mine
+        .filter((p) => p.state === "scheduled")
+        .map((p) => ({ id: p.id, scheduledAt: p.scheduledFor ?? null }));
+
+    // Posts that are not scheduled detach too, but nothing about them changes
+    // beyond losing the goal, so they are counted rather than listed.
+    const kept = Math.max(mine.length - scheduled.length, 0);
+
+    s.ask({
+      title: `Delete ${g.name}?`,
+      body: scheduled.length
+        ? `The goal stops running. ${scheduled.length} scheduled ${scheduled.length === 1 ? "post" : "posts"} ` +
+          `${scheduled.length === 1 ? "stays" : "stay"} in the queue and will still publish, but with no goal ` +
+          `behind ${scheduled.length === 1 ? "it" : "them"}.`
+        : kept > 0
+          ? `The goal stops running. The ${kept} post${kept === 1 ? "" : "s"} it already produced ` +
+            `${kept === 1 ? "stays" : "stay"} in the queue, detached from it.`
+          : "The goal stops running. It has produced no posts.",
+      items: scheduled
+        .slice(0, 5)
+        .map((p) => ({ label: p.scheduledAt ? `${p.id} — ${absDT(p.scheduledAt)}` : p.id })),
+      actionLabel: scheduled.length ? "Delete and detach posts" : "Delete goal",
+      border: "1px solid var(--red)",
+      bg: "var(--surface)",
+      fg: "var(--red)",
+      run: () => void runDelete(g, scheduled.length > 0),
+    });
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -114,6 +221,16 @@ function GoalsInner({ now }: { now: number }) {
               const actions = [
                 {
                   label: g.status === "active" ? "Pause" : "Resume",
+                  icon: g.status === "active" ? (
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none" aria-hidden style={{ flexShrink: 0 }}>
+                      <rect x="6" y="4" width="4" height="16" rx="1" />
+                      <rect x="14" y="4" width="4" height="16" rx="1" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none" aria-hidden style={{ flexShrink: 0 }}>
+                      <path d="M6 4l14 8-14 8V4z" />
+                    </svg>
+                  ),
                   br: "var(--border)",
                   fg: "var(--fg2)",
                   run: () => {
@@ -124,6 +241,12 @@ function GoalsInner({ now }: { now: number }) {
                 },
                 {
                   label: "Duplicate",
+                  icon: (
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ flexShrink: 0 }}>
+                      <rect x="9" y="9" width="11" height="11" rx="2" />
+                      <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                    </svg>
+                  ),
                   br: "var(--border)",
                   fg: "var(--fg2)",
                   run: () => {
@@ -131,31 +254,34 @@ function GoalsInner({ now }: { now: number }) {
                     s.toast("Goal duplicated");
                   },
                 },
-                { label: "Run now", br: "var(--green-line)", fg: "var(--green-text)", run: () => s.toast("Run queued for " + g.name) },
+                {
+                  label: "Run now",
+                  icon: (
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" stroke="none" aria-hidden style={{ flexShrink: 0 }}>
+                      <path d="M6 4l14 8-14 8V4z" />
+                    </svg>
+                  ),
+                  br: "var(--green-line)",
+                  fg: "var(--green-text)",
+                  run: () => s.toast("Run queued for " + g.name),
+                },
                 {
                   label: "Delete",
+                  icon: (
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ flexShrink: 0 }}>
+                      <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" />
+                    </svg>
+                  ),
                   br: "var(--red-br)",
                   fg: "var(--red)",
-                  run: () =>
-                    s.ask({
-                      title: "Delete " + g.name + "?",
-                      body: "The goal stops running. Posts it already produced stay in the queue.",
-                      items: [],
-                      actionLabel: "Delete goal",
-                      border: "1px solid var(--red)",
-                      bg: "var(--surface)",
-                      fg: "var(--red)",
-                      run: () => {
-                        s.setGoals((gs) => gs.filter((x) => x.id !== g.id));
-                        s.ask(null);
-                        s.toast("Goal deleted");
-                      },
-                    }),
+                  run: () => askDelete(g),
                 },
               ];
 
+              const busy = !!deleting[g.id];
+
               return (
-                <tr key={g.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                <tr key={g.id} style={{ borderBottom: "1px solid var(--border)", opacity: busy ? 0.55 : 1 }}>
                   <td style={{ padding: 10 }}>
                     <button type="button" onClick={() => s.go(`/goals/${g.id}`)} style={{ border: 0, background: "transparent", padding: 0, textAlign: "left", fontSize: 13, fontWeight: 500, color: "var(--fg)" }}>
                       {g.name}
@@ -184,8 +310,27 @@ function GoalsInner({ now }: { now: number }) {
                   <td style={{ padding: 10 }}>
                     <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
                       {actions.map((a) => (
-                        <button key={a.label} type="button" onClick={a.run} style={{ padding: "4px 9px", border: `1px solid ${a.br}`, borderRadius: "var(--r2)", background: "var(--surface)", color: a.fg, fontSize: 11 }}>
-                          {a.label}
+                        <button
+                          key={a.label}
+                          type="button"
+                          onClick={a.run}
+                          disabled={busy}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                            padding: "4px 9px",
+                            border: `1px solid ${a.br}`,
+                            borderRadius: "var(--r2)",
+                            background: "var(--surface)",
+                            color: a.fg,
+                            fontSize: 11,
+                            fontWeight: 500,
+                            cursor: busy ? "default" : "pointer",
+                          }}
+                        >
+                          {a.icon}
+                          <span>{a.label}</span>
                         </button>
                       ))}
                     </div>
