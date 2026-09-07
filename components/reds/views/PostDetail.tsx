@@ -70,8 +70,17 @@ export function PostDetail({ id }: { id: string }) {
     headline: sl.headline,
     body: sl.body,
     items: sl.body.split(/(?<=\.)\s+/).slice(0, 3),
+    // A generated slide is a real rendered image in storage, reached by signed
+    // URL. A hand-composed one points at a library asset instead, and neither
+    // resolves through the other: `assetId` on a generated slide is a
+    // `PostMedia` id, which the asset library has never heard of.
+    previewUrl: sl.previewUrl,
     assetTint: asset?.tint || "var(--n100)",
-    assetLabel: asset ? `${asset.name} — ${asset.width}×${asset.height}` : "no asset",
+    assetLabel: sl.previewUrl
+      ? `generated${sl.width && sl.height ? ` — ${sl.width}×${sl.height}` : ""}`
+      : asset
+        ? `${asset.name} — ${asset.width}×${asset.height}`
+        : "no asset",
     isCover: sl.layout === "cover",
     isList: sl.layout === "list",
     isProse: sl.layout !== "list" && sl.layout !== "cta",
@@ -188,7 +197,14 @@ export function PostDetail({ id }: { id: string }) {
           >
             <div key={`cf${cfKey}-${idx}`} style={{ position: "absolute", inset: 0, animation: "reds-cf 200ms ease-out" }}>
               <div aria-hidden style={{ position: "absolute", inset: 0, background: slide.assetTint }} />
-              <div aria-hidden style={{ position: "absolute", left: 12, bottom: 10, fontFamily: MONO, fontSize: 11, color: "var(--fg3)" }}>{slide.assetLabel}</div>
+              {slide.previewUrl ? (
+                <img
+                  src={slide.previewUrl}
+                  alt={slide.headline || "Generated slide"}
+                  style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                />
+              ) : null}
+              <div aria-hidden style={{ position: "absolute", left: 12, bottom: 10, fontFamily: MONO, fontSize: 11, color: slide.previewUrl ? "rgba(255,255,255,.85)" : "var(--fg3)", textShadow: slide.previewUrl ? "0 1px 3px rgba(0,0,0,.9)" : "none" }}>{slide.assetLabel}</div>
               <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", justifyContent: slide.justify, gap: 14, padding: slide.pad }}>
                 {slide.isCover ? (
                   <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".24em", color: "var(--green-text)" }}>REDS</span>
@@ -272,10 +288,18 @@ export function PostDetail({ id }: { id: string }) {
                     role="tab"
                     aria-selected={on}
                     onClick={() => { setSlideIdx(i); setCfKey((k) => k + 1); }}
-                    style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", width: 52, height: 66, padding: 5, border: `1px solid ${on ? "var(--green-line)" : "var(--border)"}`, borderRadius: "var(--r2)", background: a?.tint || "var(--n100)", color: "var(--fg3)", fontFamily: MONO, fontSize: 10, textAlign: "left" }}
+                    style={{ position: "relative", overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "space-between", width: 52, height: 66, padding: 5, border: `1px solid ${on ? "var(--green-line)" : "var(--border)"}`, borderRadius: "var(--r2)", background: a?.tint || "var(--n100)", color: "var(--fg3)", fontFamily: MONO, fontSize: 10, textAlign: "left" }}
                   >
-                    <span style={{ color: on ? "var(--green-text)" : "var(--fg3)" }}>{String(i + 1).padStart(2, "0")}</span>
-                    <span>{x.layout.slice(0, 5)}</span>
+                    {x.previewUrl ? (
+                      <img
+                        src={x.previewUrl}
+                        alt=""
+                        loading="lazy"
+                        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                      />
+                    ) : null}
+                    <span style={{ position: "relative", color: on ? "var(--green-text)" : x.previewUrl ? "#fff" : "var(--fg3)", textShadow: x.previewUrl ? "0 1px 2px rgba(0,0,0,.9)" : "none" }}>{String(i + 1).padStart(2, "0")}</span>
+                    <span style={{ position: "relative", color: x.previewUrl ? "#fff" : "inherit", textShadow: x.previewUrl ? "0 1px 2px rgba(0,0,0,.9)" : "none" }}>{x.layout.slice(0, 5)}</span>
                   </button>
                   <button
                     type="button"
