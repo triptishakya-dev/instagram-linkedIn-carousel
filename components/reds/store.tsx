@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
@@ -211,7 +212,14 @@ export function RedsProvider({ children }: { children: ReactNode }) {
 
   const [budgetCap, setBudgetCap] = useState(4200000);
   const [vw, setVw] = useState(1440);
-  const [now, setNow] = useState<number | null>(null);
+
+  const nowRef = useRef<number | null>(null);
+  const now = useSyncExternalStore(
+    useCallback(() => () => {}, []),
+    useCallback(() => (nowRef.current ??= Date.now()), []),
+    useCallback(() => null, []),
+  );
+
 
   const [settings, setSettings] = useState<Settings>({
     wsName: "",
@@ -226,8 +234,8 @@ export function RedsProvider({ children }: { children: ReactNode }) {
     logoId: null,
     captionPrompt: "",
     imagePrompt: "",
-    defCaptionModel: "mdl-haiku",
-    defSlideModel: "mdl-sonnet",
+    defCaptionModel: "",
+    defSlideModel: "",
     defScope: "slide",
     bulkThreshold: 2000,
     notif: {
@@ -314,7 +322,6 @@ export function RedsProvider({ children }: { children: ReactNode }) {
 
   // ---- viewport + shortcuts ----
   useEffect(() => {
-    setNow(Date.now());
     const onResize = () => setVw(window.innerWidth);
     onResize();
     window.addEventListener("resize", onResize);
