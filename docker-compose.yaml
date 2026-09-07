@@ -12,5 +12,60 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  # Temporal reuses the Postgres above rather than running its own: auto-setup
+  # creates the `temporal` and `temporal_visibility` databases on first boot.
+  #
+  # `depends_on` is deliberately the plain form, with no healthcheck on the
+  # postgres service -- adding one would recreate the container the app is
+  # already connected to. Auto-setup retries the connection until Postgres
+  # answers, so ordering sorts itself out.
+  temporal:
+    image: temporalio/auto-setup:1.29.0
+    container_name: insta-crossel-temporal
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgres
+      POSTGRES_SEEDS: postgres
+      ENABLE_ES: "false"
+    ports:
+      - "7233:7233"
+
+  # Watch workflow runs, retries and failures. Nothing depends on it; it is
+  # purely an operator window onto the cluster.
+  temporal-ui:
+    image: temporalio/ui:2.34.0
+    container_name: insta-crossel-temporal-ui
+    restart: unless-stopped
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8080:8080"
+
+  # One OpenAI-compatible endpoint in front of every provider, so the app calls
+  # a model by the name stored on `AiModel.apiModelId` and never holds a
+  # provider key itself. Keys live here, injected from .env.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: insta-crossel-litellm
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-dev}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
+
 volumes:
   postgres_data:
