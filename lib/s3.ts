@@ -207,6 +207,32 @@ export async function headObject(key: string): Promise<ObjectHead | null> {
   }
 }
 
+/**
+ * Writes bytes we produced ourselves, rather than bytes a browser uploaded.
+ *
+ * The presigned-PUT path exists so large uploads never pass through the Next
+ * server. Generated slides have the opposite shape: the worker already holds
+ * the bytes in memory, so signing a URL for itself would be two round trips to
+ * avoid a hop that is not happening anyway.
+ */
+export async function putObject(
+  key: string,
+  body: Buffer,
+  contentType: string,
+): Promise<void> {
+  await s3().send(
+    new PutObjectCommand({
+      Bucket: bucketName(),
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+      // Instagram's Graph API fetches `image_url` itself, so objects under
+      // `posts/` have to be readable without a signature; see `publicUrlFor`.
+      CacheControl: "public, max-age=31536000, immutable",
+    }),
+  );
+}
+
 export async function copyObject(fromKey: string, toKey: string): Promise<void> {
   const bucket = bucketName();
   await s3().send(
