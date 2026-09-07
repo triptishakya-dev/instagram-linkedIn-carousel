@@ -39,26 +39,49 @@ const DEFAULT_MODELS = [
 
 /**
  * GET /api/models
- * Fetches all AI models belonging to current user. Auto-seeds default models if none exist.
+ *
+ * Seeds `DEFAULT_MODELS` on the workspace's first read, so a new user has
+ * something to point a goal at.
+ *
+ * The seed fires on `modelsSeededAt` being unset rather than on the list being
+ * empty: those two conditions look identical on a first visit, but they part
+ * ways the moment someone deletes their last model — and seeding on an empty
+ * list would hand the three defaults straight back on the next reload, with
+ * nothing on screen to explain why the delete did not take.
  */
 export async function GET() {
   try {
     const userId = await getCurrentUserId();
-    let models = await prisma.aiModel.findMany({
+
+    const workspace = await prisma.workspaceSetting.findUnique({
+      where: { userId },
+      select: { modelsSeededAt: true },
+    });
+
+    if (!workspace?.modelsSeededAt) {
+      await prisma.$transaction(async (tx) => {
+        // A workspace with rows already but no stamp predates this column, so
+        // it has been seeded before whatever the marker says.
+        const existing = await tx.aiModel.count({ where: { userId } });
+
+        if (existing === 0) {
+          await tx.aiModel.createMany({
+            data: DEFAULT_MODELS.map((m) => ({ ...m, userId })),
+          });
+        }
+
+        await tx.workspaceSetting.upsert({
+          where: { userId },
+          create: { userId, settings: {}, modelsSeededAt: new Date() },
+          update: { modelsSeededAt: new Date() },
+        });
+      });
+    }
+
+    const models = await prisma.aiModel.findMany({
       where: { userId },
       orderBy: { createdAt: "asc" },
     });
-
-    // Auto-seed initial default models if user has no models in DB yet
-    if (models.length === 0) {
-      await prisma.aiModel.createMany({
-        data: DEFAULT_MODELS.map((m) => ({ ...m, userId })),
-      });
-      models = await prisma.aiModel.findMany({
-        where: { userId },
-        orderBy: { createdAt: "asc" },
-      });
-    }
 
     return NextResponse.json({ models });
   } catch (err) {
