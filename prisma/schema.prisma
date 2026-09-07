@@ -94,6 +94,7 @@ model User {
   aiModels       AiModel[]
   assets         Asset[]
   workspace      WorkspaceSetting?
+  generationRuns GenerationRun[]
 
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -204,8 +205,25 @@ model Post {
   /// Set by the client to make a retried submit return the original post.
   idempotencyKey String?      @unique
 
+  /// The run that produced this post, and what it cost.
+  ///
+  /// The Posts table already renders tokens, spend, generation time and run
+  /// count; none of it was ever stored, so every figure on screen was a
+  /// placeholder. LiteLLM returns real usage per call, which lands here.
+  generationRunId  String?
+  modelId          String?
+  inputTokens      Int?
+  outputTokens     Int?
+  estimatedCostInr Float?
+  generationMs     Int?
+  runCount         Int          @default(0)
+  /// Today's concrete angle, derived from the goal's `imagePrompt`. Kept so a
+  /// post can be traced back to the wording that produced it.
+  topic            String?      @db.Text
+
   user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   goal        Goal?           @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  generationRun GenerationRun? @relation(fields: [generationRunId], references: [id], onDelete: SetNull)
   media       PostMedia[]
   targets     PublishTarget[]
 
@@ -233,11 +251,82 @@ model Goal {
   modelId           String?
   status            GoalStatus  @default(ACTIVE)
 
+  /// One of `STYLE_PRESETS` in `prompt/image-generator.ts` (e.g. "3d-render").
+  ///
+  /// A plain string rather than a Prisma enum on purpose: the eleven styles are
+  /// owned by that module as a TS union, and Prisma enum members cannot be
+  /// named `3d-render` anyway. Mirroring them here would mean two lists to keep
+  /// in step; instead the zod schema validates against the module's own keys.
+  visualStyle       String?
+  /// Overrides the per-platform default from workspace settings.
+  slideCount        Int?
+  /// `headerTitle`, `subtitle`, `flowchartNodes[]`, `metricsText`,
+  /// `takeawayQuote`, `timelineSteps[]` — shaped like the prompt builder's
+  /// `infographicDetails`. An infographic style is only eligible when this is
+  /// present; otherwise the renderer would invent the diagram's contents.
+  infographicDetails Json?
+  /// The last few topics this goal produced, so the daily run can be told what
+  /// to avoid. Without it, one `imagePrompt` yields the same post every day.
+  recentTopics      Json?       @default("[]")
+
   user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   posts             Post[]
 
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
+}
+
+// ==========================================
+// Generation Runs
+// ==========================================
+
+/// One execution of the generation pipeline, scheduled or triggered by hand.
+///
+/// This is the row the Runs table reads. It exists separately from the posts a
+/// run produced because a run that produced nothing -- no goal was due, a
+/// provider key was missing, the model 404'd -- still has to be visible and
+/// explain itself. `workflowId` is the handle for the same execution in the
+/// Temporal UI.
+model GenerationRun {
+  id          String             @id @default(cuid())
+  userId      String
+  /// Null when the run covers every due goal rather than one named goal.
+  goalId      String?
+  trigger     GenerationTrigger
+  status      RunStatus          @default(QUEUED)
+
+  workflowId  String?
+  runId       String?
+
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  /// Posts that reached the database, which is not the same as goals attempted.
+  postCount   Int                @default(0)
+  /// Why a FAILED or PARTIAL run ended that way, in the user's words.
+  error       String?            @db.Text
+
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  posts       Post[]
+
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+enum GenerationTrigger {
+  SCHEDULED
+  MANUAL
+}
+
+enum RunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  /// Some posts landed, others failed. Distinct from FAILED so a run that
+  /// produced four of six posts does not read as a total loss.
+  PARTIAL
+  FAILED
 }
 
 // ==========================================
@@ -256,6 +345,13 @@ model AiModel {
   temperature           Float     @default(0.7)
   enabled               Boolean   @default(true)
   keyLast4              String?
+
+  /// The `model_name` to send to the LiteLLM proxy, e.g. "gemini-flash-latest".
+  ///
+  /// `label` and `provider` are for humans; neither is callable. Without this
+  /// there is no way to turn a row the user configured in Accounts into a
+  /// request, which is why generation used hardcoded model ids before.
+  apiModelId            String?
 
   user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -305,6 +401,13 @@ model WorkspaceSetting {
   team      Json     @default("[]")
   budgetCap Int      @default(4200000)
 
+  /// Stamped the first time `GET /api/models` seeds the default model list.
+  ///
+  /// Without it, "has no models" and "has never had models" are the same
+  /// state, and deleting the last model would silently re-seed the defaults on
+  /// the next read.
+  modelsSeededAt DateTime?
+
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
@@ -322,6 +425,20 @@ model PostMedia {
   aspectRatio   Float?   // Aspect ratio float (width / height)
   format        String?  // Image format (e.g., "jpg", "png")
   fileSizeBytes Int?
+
+  /// S3 object key behind `url`. Nullable only because rows written before
+  /// storage was real have no key to record.
+  storageKey    String?
+  /// The prompt this image was actually generated from, and what it refused.
+  ///
+  /// This is the audit trail that makes "generation is driven by the goal"
+  /// checkable rather than a claim: every image can be read back to the
+  /// wording that produced it.
+  prompt          String? @db.Text
+  negativePrompt  String? @db.Text
+  /// Slide copy, when the style calls for text over the image.
+  headline        String?
+  body            String? @db.Text
 
   post          Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
 
