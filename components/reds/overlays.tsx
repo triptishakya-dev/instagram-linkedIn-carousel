@@ -1,10 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { PILL, STATES, TINTS } from "@/lib/reds/data";
-import { MONO, absDT, fmtBytes, inr, iso } from "@/lib/reds/format";
-import { CURRENT_USER, useReds, seg } from "./store";
-import type { Asset, Model, ModelRole } from "@/lib/reds/types";
+import { deleteAsset, uploadAsset } from "@/lib/api-client";
+import { isAllowedAssetMime, MAX_ASSET_BYTES } from "@/lib/media";
+import { PILL, STATES } from "@/lib/reds/data";
+import { MONO, absDT, fmtBytes, inr } from "@/lib/reds/format";
+import { toRedsAsset } from "@/lib/reds/map";
+import { useReds, seg } from "./store";
+import type { Model, ModelRole, UploadItem } from "@/lib/reds/types";
 
 const SCRIM: React.CSSProperties = {
   position: "fixed",
@@ -240,7 +243,11 @@ function AssetPicker() {
                 }}
                 style={{ display: "flex", flexDirection: "column", gap: 6, padding: 6, border: `1px solid ${on ? "var(--green-line)" : "var(--border)"}`, borderRadius: "var(--r3)", background: on ? "var(--green-tint)" : "var(--surface)", textAlign: "left" }}
               >
-                <span aria-hidden style={{ width: "100%", aspectRatio: "4 / 3", borderRadius: "var(--r2)", background: a.tint }} />
+                <span aria-hidden style={{ width: "100%", aspectRatio: "4 / 3", borderRadius: "var(--r2)", background: a.tint, overflow: "hidden", display: "block" }}>
+                  {a.previewUrl && a.kind !== "video" && a.kind !== "document" ? (
+                    <img src={a.previewUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                  ) : null}
+                </span>
                 <span style={{ fontSize: 11, color: "var(--fg2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
               </button>
             );
@@ -286,7 +293,15 @@ function AssetDrawer() {
         </div>
 
         <div style={{ flex: "1 1 auto", overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 18 }}>
-          <span aria-hidden style={{ width: "100%", aspectRatio: "4 / 3", border: "1px solid var(--border-strong)", borderRadius: "var(--r3)", background: a.tint }} />
+          <span aria-hidden style={{ width: "100%", aspectRatio: "4 / 3", border: "1px solid var(--border-strong)", borderRadius: "var(--r3)", background: a.tint, overflow: "hidden", display: "block" }}>
+            {a.previewUrl ? (
+              a.kind === "video" ? (
+                <video src={a.previewUrl} controls style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+              ) : a.kind === "document" ? null : (
+                <img src={a.previewUrl} alt={a.name} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+              )
+            ) : null}
+          </span>
           <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "auto 1fr", gap: "8px 18px", fontSize: 13 }}>
             {meta.map((m) => (
               <div key={m.k} style={{ display: "contents" }}>
@@ -325,11 +340,21 @@ function AssetDrawer() {
             Replace file
             <input
               type="file"
-              onChange={(e) => {
+              onChange={async (e) => {
                 const f = e.target.files?.[0];
                 if (!f) return;
-                s.setAssets((xs) => xs.map((x) => (x.id === a.id ? { ...x, sizeBytes: f.size, previewUrl: URL.createObjectURL(f) } : x)));
-                s.toast("File replaced");
+                try {
+                  // A new object under a new key, then the old row goes. The
+                  // stored key is derived from the asset id, so an in-place
+                  // swap would leave the extension lying about the bytes.
+                  const replacement = await uploadAsset(f, { kind: a.kind.toUpperCase() as "IMAGE", tags: a.tags });
+                  await deleteAsset(a.id).catch(() => {});
+                  s.setAssets((xs) => [toRedsAsset(replacement), ...xs.filter((x) => x.id !== a.id)]);
+                  s.setDrawerId(replacement.id);
+                  s.toast("File replaced");
+                } catch (err) {
+                  s.toast(err instanceof Error ? err.message : "Replace failed");
+                }
               }}
               style={{ display: "none" }}
             />
@@ -349,9 +374,15 @@ function AssetDrawer() {
                 });
                 return;
               }
-              s.setAssets((xs) => xs.filter((x) => x.id !== a.id));
-              s.setDrawerId(null);
-              s.toast("Asset deleted");
+              void deleteAsset(a.id)
+                .then(() => {
+                  s.setAssets((xs) => xs.filter((x) => x.id !== a.id));
+                  s.setDrawerId(null);
+                  s.toast("Asset deleted");
+                })
+                .catch((err: unknown) =>
+                  s.toast(err instanceof Error ? err.message : "Delete failed"),
+                );
             }}
             style={{ padding: "7px 13px", border: "1px solid var(--red-br)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--red)", fontSize: 13 }}
           >
@@ -368,59 +399,57 @@ function AssetDrawer() {
 export function useAssetIngest() {
   const s = useReds();
 
+  /**
+   * Sends each file straight to S3 through a presigned PUT, then records the
+   * row. The asset the API returns replaces nothing optimistic — the list only
+   * grows once the upload is actually durable, so a reload shows the same
+   * library the user just saw.
+   */
   return (files: FileList | File[] | null | undefined) => {
     const arr = Array.from(files || []);
     if (!arr.length) return;
 
-    const queue = arr.map((f) => ({
+    const queued = arr.map((f) => ({
       id: Math.random().toString(36).slice(2),
       name: f.name,
       size: f.size,
       pct: 0,
-      state: (f.size > 26214400
+      state: (f.size > MAX_ASSET_BYTES
         ? "failed"
-        : s.assets.find((a) => a.name === f.name && a.sizeBytes === f.size)
-          ? "duplicate"
-          : "uploading") as "uploading" | "failed" | "duplicate",
+        : !isAllowedAssetMime(f.type)
+          ? "failed"
+          : s.assets.find((a) => a.name === f.name && a.sizeBytes === f.size)
+            ? "duplicate"
+            : "uploading") as UploadItem["state"],
       file: f,
     }));
 
-    s.setUploads((u) => [...u, ...queue]);
+    s.setUploads((u) => [...u, ...queued]);
 
-    const landed: Asset[] = [];
-    const tick = setInterval(() => {
-      let done = true;
-      s.setUploads((us) =>
-        us.map((u) => {
-          if (u.state !== "uploading") return u;
-          const pct = Math.min(100, u.pct + 14 + Math.random() * 18);
-          if (pct < 100) {
-            done = false;
-            return { ...u, pct };
-          }
-          landed.push({
-            id: "AST-U" + Math.random().toString(36).slice(2, 7),
-            name: u.name,
-            kind: u.file.type.startsWith("video") ? "video" : u.file.type.startsWith("image") ? "image" : "document",
-            mimeType: u.file.type || "application/octet-stream",
-            sizeBytes: u.size,
-            width: 1080,
-            height: 1350,
-            tags: ["upload"],
-            usedInPostIds: [],
-            uploadedBy: CURRENT_USER,
-            uploadedAt: iso(Date.now()),
-            tint: TINTS[Math.floor(Math.random() * TINTS.length)],
-            previewUrl: URL.createObjectURL(u.file),
-          });
-          return { ...u, pct: 100, state: "done" as const };
-        }),
-      );
-      if (done) {
-        clearInterval(tick);
-        if (landed.length) s.setAssets((xs) => [...xs, ...landed]);
-      }
-    }, 260);
+    const mark = (id: string, patch: Partial<UploadItem>) =>
+      s.setUploads((us) => us.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+
+    for (const item of queued) {
+      if (item.state !== "uploading") continue;
+
+      uploadAsset(item.file, {
+        kind: item.file.type.startsWith("video")
+          ? "VIDEO"
+          : item.file.type.startsWith("image")
+            ? "IMAGE"
+            : "DOCUMENT",
+        tags: ["upload"],
+        onProgress: (pct) => mark(item.id, { pct }),
+      })
+        .then((asset) => {
+          mark(item.id, { pct: 100, state: "done" });
+          s.setAssets((xs) => [toRedsAsset(asset), ...xs.filter((x) => x.id !== asset.id)]);
+        })
+        .catch((err: unknown) => {
+          mark(item.id, { state: "failed" });
+          s.toast(err instanceof Error ? err.message : "Upload failed");
+        });
+    }
   };
 }
 
