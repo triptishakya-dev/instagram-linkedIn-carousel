@@ -148,8 +148,24 @@ export function PlatformCard({
   onOpen?: () => void;
 }) {
   const meta = PLATFORM_META[platform];
-  const slide = post?.slides[0];
   const [hover, setHover] = useState(false);
+
+  /**
+   * Which slide this card is showing.
+   *
+   * Held per card, so the two platforms browse independently -- their runs
+   * produce different slide counts (eight against six here) and stepping one
+   * has no meaning for the other.
+   */
+  const [slideIdx, setSlideIdx] = useState(0);
+
+  const count = post?.slides.length ?? 0;
+  // Clamped rather than trusted: the same card can be handed a different post
+  // when the reader opens the sibling, and the new one may be shorter.
+  const idx = count ? Math.min(slideIdx, count - 1) : 0;
+  const slide = post?.slides[idx];
+
+  const step = (delta: number) => setSlideIdx(Math.max(0, Math.min(count - 1, idx + delta)));
 
   const interactive = !!post && !!onOpen && !active;
 
@@ -202,6 +218,16 @@ export function PlatformCard({
       {/* ---- visual preview ---- */}
       {post && slide ? (
         <div
+          // Focusable so the arrow keys work here the way they did on the old
+          // slide stage; the buttons below are the discoverable path.
+          tabIndex={count > 1 ? 0 : -1}
+          role={count > 1 ? "group" : undefined}
+          aria-label={count > 1 ? `${meta.label} slides — left and right arrow keys step through them` : undefined}
+          onKeyDown={(e) => {
+            if (count < 2) return;
+            if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
+            if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
+          }}
           style={{
             position: "relative",
             width: "100%",
@@ -215,7 +241,7 @@ export function PlatformCard({
           {slide.previewUrl ? (
             <img
               src={slide.previewUrl}
-              alt={`${meta.label} slide 1`}
+              alt={`${meta.label} slide ${idx + 1} of ${count}`}
               style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
             />
           ) : (
@@ -233,22 +259,76 @@ export function PlatformCard({
               No image rendered
             </span>
           )}
-          {post.slides.length > 1 ? (
-            <span
-              style={{
-                position: "absolute",
-                right: 8,
-                top: 8,
-                padding: "2px 8px",
-                borderRadius: 999,
-                background: "rgba(0,0,0,.62)",
-                color: "#fff",
-                fontFamily: MONO,
-                fontSize: 11,
-              }}
-            >
-              1 / {post.slides.length}
-            </span>
+
+          {/*
+            The next slide, painted underneath at zero opacity purely so the
+            browser fetches it. These are signed URLs off S3 and a cold one
+            takes long enough to flash empty on the step.
+          */}
+          {count > 1 && post.slides[idx + 1]?.previewUrl ? (
+            <img src={post.slides[idx + 1].previewUrl} alt="" aria-hidden style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }} />
+          ) : null}
+
+          {count > 1 ? (
+            <>
+              <span
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  top: 8,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: "rgba(0,0,0,.62)",
+                  color: "#fff",
+                  fontFamily: MONO,
+                  fontSize: 11,
+                }}
+              >
+                {idx + 1} / {count}
+              </span>
+
+              {([
+                { dir: -1, label: "Previous slide", side: "left", d: "M14.5 5L8 12l6.5 7" },
+                { dir: 1, label: "Next slide", side: "right", d: "M9.5 5L16 12l-6.5 7" },
+              ] as const).map((nav) => {
+                const disabled = nav.dir < 0 ? idx === 0 : idx === count - 1;
+                return (
+                  <button
+                    key={nav.side}
+                    type="button"
+                    aria-label={nav.label}
+                    disabled={disabled}
+                    onClick={() => step(nav.dir)}
+                    style={{
+                      position: "absolute",
+                      top: "50%",
+                      [nav.side]: 8,
+                      transform: "translateY(-50%)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 30,
+                      height: 30,
+                      padding: 0,
+                      borderRadius: "50%",
+                      border: "1px solid rgba(255,255,255,.22)",
+                      background: "rgba(0,0,0,.55)",
+                      color: "#fff",
+                      // Dimmed rather than hidden at the ends: a control that
+                      // vanishes mid-carousel moves the other one under the
+                      // cursor and makes the reader re-aim.
+                      opacity: disabled ? 0.28 : hover ? 1 : 0.72,
+                      cursor: disabled ? "default" : "pointer",
+                      transition: "opacity 140ms ease, background 140ms ease",
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d={nav.d} />
+                    </svg>
+                  </button>
+                );
+              })}
+            </>
           ) : null}
         </div>
       ) : (
