@@ -15,6 +15,7 @@ import { useRouter } from "next/navigation";
 import { listAssets } from "@/lib/api-client";
 import { EMPTY_WORKSPACE, STATES } from "@/lib/reds/data";
 import { toRedsAsset, toRedsPost } from "@/lib/reds/map";
+import { runSiblings as groupRunSiblings } from "@/lib/reds/run-siblings";
 import { iso } from "@/lib/reds/format";
 import type {
   Asset,
@@ -24,6 +25,7 @@ import type {
   ModelRole,
   NewModelDraft,
   PickerSpec,
+  Platform,
   Post,
   PostState,
   Toast,
@@ -81,6 +83,15 @@ interface Store {
   modelById: (id: string) => Model | undefined;
   patchPost: (id: string, patch: Partial<Post>) => void;
   postsForGoal: (id: string) => Post[];
+  /**
+   * The posts a single generation run produced, keyed by platform.
+   *
+   * Generation writes one post per platform, so "what is going out to
+   * Instagram" and "what is going out to LinkedIn" are two rows joined only by
+   * the run id. Every post is already in the store, so this is a lookup rather
+   * than a fetch.
+   */
+  runSiblings: (post: Post) => Partial<Record<Platform, Post>>;
 
   // ---- prefs ----
   theme: Theme;
@@ -547,6 +558,8 @@ export function RedsProvider({ children }: { children: ReactNode }) {
 
   const postsForGoal = useCallback((id: string) => posts.filter((p) => p.goalId === id), [posts]);
 
+  const runSiblings = useCallback((post: Post) => groupRunSiblings(post, posts), [posts]);
+
   const filtered = useCallback(
     () =>
       posts.filter(
@@ -572,7 +585,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
   const value = useMemo<Store>(
     () => ({
       goals, setGoals, posts, setPosts, assets, setAssets, models, setModels,
-      refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal,
+      refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal, runSiblings,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
       filterStates, setFilterStates, filterGoal, setFilterGoal,
       sort, setSort, groupBy, setGroupBy, closedGroups, setClosedGroups,
@@ -586,7 +599,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
       budgetCap, setBudgetCap, vw, now, go, filtered,
     }),
     [
-      goals, posts, assets, models, refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal,
+      goals, posts, assets, models, refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal, runSiblings,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
       filterStates, filterGoal, sort, groupBy, closedGroups,
       page, pageSize, cols, sel, lastSel,
