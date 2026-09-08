@@ -5,6 +5,7 @@ import {
   ApiClientError,
   blockingGoalsOf,
   deleteModel,
+  rotateModelKey,
   listModels,
   updateModel,
   type BlockingGoal,
@@ -40,11 +41,35 @@ interface Connection {
 export function Accounts() {
   const s = useReds();
   const [tab, setTab] = useState<"models" | "connections">("models");
-  const [roleDefaults, setRoleDefaults] = useState<Record<ModelRole, string>>({
-    caption: "",
-    slides: "",
-    both: "",
-  });
+  /**
+   * The three "Default for ..." dropdowns, over the two keys that generation
+   * actually reads.
+   *
+   * These used to be component state that nothing ever read back: choosing a
+   * model here changed a local variable, wrote nothing to the workspace, and
+   * reset on navigation — so `planGenerationActivity` went on seeing no
+   * default and fell back to the built-in model every run.
+   *
+   * "Both" is not a third stored slot. It writes the same model into both
+   * keys, and reads back as selected only when the two agree.
+   */
+  const roleDefaults: Record<ModelRole, string> = {
+    caption: s.settings.defCaptionModel,
+    slides: s.settings.defSlideModel,
+    both:
+      s.settings.defCaptionModel && s.settings.defCaptionModel === s.settings.defSlideModel
+        ? s.settings.defCaptionModel
+        : "",
+  };
+
+  /** Persisted by the store, which saves the settings blob whenever it changes. */
+  const setRoleDefault = (role: ModelRole, id: string) => {
+    s.setSettings((st) => ({
+      ...st,
+      ...(role === "caption" || role === "both" ? { defCaptionModel: id } : {}),
+      ...(role === "slides" || role === "both" ? { defSlideModel: id } : {}),
+    }));
+  };
   // Populated by OAuth; nothing is connected until the user authorises.
   const [connections] = useState<Connection[]>([]);
 
@@ -71,6 +96,41 @@ export function Accounts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * Keys being typed, held here and nowhere else.
+   *
+   * A provider key never enters the shared store: it goes from this input
+   * straight to the server, which stores it encrypted and returns only the
+   * last four characters. The draft is dropped the moment it is saved.
+   */
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
+  const [savingKey, setSavingKey] = useState<Record<string, boolean>>({});
+
+  const saveKey = async (m: Model) => {
+    const key = (keyDrafts[m.id] ?? "").trim();
+    if (!key || savingKey[m.id]) return;
+
+    setSavingKey((x) => ({ ...x, [m.id]: true }));
+    try {
+      const saved = await rotateModelKey(m.id, key);
+      setKeyDrafts((d) => ({ ...d, [m.id]: "" }));
+      s.setModels((ms) =>
+        ms.map((x) => (x.id === m.id ? { ...x, keyLast4: saved.keyLast4 ?? undefined } : x)),
+      );
+      s.toast(`Key saved for ${m.label} — calls for this model now use it`);
+    } catch (err) {
+      s.toast(
+        err instanceof ApiClientError ? err.message : `Could not save the key for ${m.label}.`,
+      );
+    } finally {
+      setSavingKey((x) => {
+        const next = { ...x };
+        delete next[m.id];
+        return next;
+      });
+    }
+  };
+
   const setVal = <K extends keyof Model>(id: string, k: K, v: Model[K]) => {
     s.setModels((ms) => ms.map((m) => (m.id === id ? { ...m, [k]: v } : m)));
 
@@ -93,11 +153,6 @@ export function Accounts() {
       ...st,
       defCaptionModel: st.defCaptionModel === id ? "" : st.defCaptionModel,
       defSlideModel: st.defSlideModel === id ? "" : st.defSlideModel,
-    }));
-    setRoleDefaults((rd) => ({
-      caption: rd.caption === id ? "" : rd.caption,
-      slides: rd.slides === id ? "" : rd.slides,
-      both: rd.both === id ? "" : rd.both,
     }));
   };
 
@@ -289,6 +344,44 @@ export function Accounts() {
                   </div>
 
                   <div>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--fg2)" }}>
+                      API Model ID
+                      <input
+                        type="text"
+                        value={m.apiModelId ?? ""}
+                        placeholder="e.g. gpt-4o, claude-sonnet-4-5"
+                        onChange={(e) => setVal(m.id, "apiModelId", e.target.value)}
+                        style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface2)", color: "var(--fg)", fontFamily: MONO, fontSize: 12 }}
+                      />
+                    </label>
+                  </div>
+
+                  <div>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--fg2)" }}>
+                      API key
+                      <span style={{ display: "flex", gap: 6 }}>
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          value={keyDrafts[m.id] ?? ""}
+                          placeholder={m.keyLast4 ? `Stored, ending ${m.keyLast4} — paste to replace` : "None stored — the proxy's own key is used"}
+                          onChange={(e) => setKeyDrafts((d) => ({ ...d, [m.id]: e.target.value }))}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveKey(m); } }}
+                          style={{ flex: "1 1 auto", minWidth: 0, padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface2)", color: "var(--fg)", fontFamily: MONO, fontSize: 12 }}
+                        />
+                        <button
+                          type="button"
+                          disabled={!((keyDrafts[m.id] ?? "").trim()) || !!savingKey[m.id]}
+                          onClick={() => void saveKey(m)}
+                          style={{ flex: "0 0 auto", padding: "6px 10px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 12, opacity: (keyDrafts[m.id] ?? "").trim() && !savingKey[m.id] ? 1 : 0.5 }}
+                        >
+                          {savingKey[m.id] ? "Saving…" : "Save"}
+                        </button>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div>
                     <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: "var(--fg2)" }}>
                       Temperature
                       <input type="range" min={0} max={1} step={0.05} value={m.temperature} onChange={(e) => setVal(m.id, "temperature", Number(e.target.value))} style={{ flex: "1 1 auto", accentColor: "var(--green-line)" }} />
@@ -311,7 +404,7 @@ export function Accounts() {
                 Default for {r.label.toLowerCase()}
                 <select
                   value={roleDefaults[r.k]}
-                  onChange={(e) => setRoleDefaults((x) => ({ ...x, [r.k]: e.target.value }))}
+                  onChange={(e) => setRoleDefault(r.k, e.target.value)}
                   style={{ padding: "7px 9px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", fontSize: 13, color: "var(--fg)" }}
                 >
                   <option value="">None selected</option>
@@ -324,7 +417,7 @@ export function Accounts() {
             <button
               type="button"
               onClick={() =>
-                s.setNewModel({ label: "", provider: "Anthropic", key: "", role: "both", maxTokens: 1000, temperature: 0.7, inPrice: 268, outPrice: 1340, enabled: true })
+                s.setNewModel({ label: "", provider: "Anthropic", apiModelId: "", key: "", role: "both", maxTokens: 1000, temperature: 0.7, inPrice: 268, outPrice: 1340, enabled: true })
               }
               style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", border: 0, borderRadius: "var(--r3)", background: "var(--green)", color: "var(--on-green)", fontSize: 13, fontWeight: 600 }}
             >
