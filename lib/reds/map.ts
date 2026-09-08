@@ -131,6 +131,7 @@ export function toRedsModel(m: ModelRecord): Model {
     id: m.id,
     label: m.label,
     provider: m.provider,
+    apiModelId: m.apiModelId ?? undefined,
     role: (m.role ?? "BOTH").toLowerCase() as ModelRole,
     inputPricePerMTokInr: m.inputPricePerMTokInr,
     outputPricePerMTokInr: m.outputPricePerMTokInr,
@@ -152,6 +153,7 @@ export function toModelWirePatch(patch: Partial<Model>): UpdateModelBody {
   const out: UpdateModelBody = {};
   if (patch.label !== undefined) out.label = patch.label;
   if (patch.provider !== undefined) out.provider = patch.provider;
+  if (patch.apiModelId !== undefined) out.apiModelId = patch.apiModelId ?? null;
   if (patch.role !== undefined) out.role = patch.role.toUpperCase() as ModelRoleWire;
   if (patch.inputPricePerMTokInr !== undefined) {
     out.inputPricePerMTokInr = patch.inputPricePerMTokInr;
