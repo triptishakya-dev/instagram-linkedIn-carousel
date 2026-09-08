@@ -147,6 +147,20 @@ export async function createPost(
   return res.json();
 }
 
+/**
+ * Removes a post, the slides under it, its publish targets and the objects
+ * behind its images.
+ *
+ * Refused with a 409 while the post is `PROCESSING`: the provider calls are
+ * already in flight and dropping the row here would not recall them. A post
+ * that has already published is deleted, but only from this workspace — what
+ * is live on Instagram or LinkedIn stays up.
+ */
+export async function deletePost(id: string): Promise<void> {
+  const res = await fetch(`/api/posts/${id}`, { method: "DELETE" });
+  if (!res.ok) await readError(res);
+}
+
 /* ---------------------------------------------------------- asset library -- */
 
 export type AssetRecord = {
@@ -338,6 +352,7 @@ export type ModelRecord = {
   id: string;
   label: string;
   provider: string;
+  apiModelId: string | null;
   role: ModelRoleWire;
   inputPricePerMTokInr: number;
   outputPricePerMTokInr: number;
@@ -352,6 +367,7 @@ export type ModelRecord = {
 export type CreateModelBody = {
   label: string;
   provider: string;
+  apiModelId?: string | null;
   role: ModelRoleWire;
   inputPricePerMTokInr: number;
   outputPricePerMTokInr: number;
@@ -375,6 +391,24 @@ export async function createModel(body: CreateModelBody): Promise<ModelRecord> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+  });
+  if (!res.ok) await readError(res);
+  return res.json();
+}
+
+/**
+ * Stores a provider key against a model, replacing whatever it had.
+ *
+ * Separate from `updateModel` so the key never has to pass through the store's
+ * model list: it goes from the input straight to the server, and only the last
+ * four characters come back. The server encrypts it at rest and sends it with
+ * calls for this model in place of the proxy's own key.
+ */
+export async function rotateModelKey(id: string, key: string): Promise<ModelRecord> {
+  const res = await fetch(`/api/models/${id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key }),
   });
   if (!res.ok) await readError(res);
   return res.json();
@@ -518,6 +552,32 @@ export async function deleteAccount(
 ): Promise<DisconnectResult> {
   const query = opts.force ? "?force=true" : "";
   const res = await fetch(`/api/accounts/${id}${query}`, { method: "DELETE" });
+  if (!res.ok) await readError(res);
+  return res.json();
+}
+
+/* ---------------------------------------------------- generation runs -- */
+
+export type TriggerRunResult = {
+  started: Array<{
+    runId: string;
+    goalId: string;
+    goalName: string;
+    workflowId: string;
+    platforms: string[];
+  }>;
+  dateKey: string;
+};
+
+export async function triggerRun(opts?: {
+  goalIds?: string[];
+  slideCount?: number;
+}): Promise<TriggerRunResult> {
+  const res = await fetch("/api/generate/run", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(opts ?? {}),
+  });
   if (!res.ok) await readError(res);
   return res.json();
 }
