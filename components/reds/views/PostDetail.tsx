@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PILL, STATES } from "@/lib/reds/data";
-import { MONO, inr, iso, num } from "@/lib/reds/format";
+import { MONO, inr, inrCost, iso, num } from "@/lib/reds/format";
 import { EmptyState } from "../charts";
 import {
   ActivityCard,
@@ -15,6 +15,7 @@ import {
 } from "../post-cards";
 import { useReds } from "../store";
 import type { Platform, Post } from "@/lib/reds/types";
+import type { UsageReport } from "@/lib/usage/query";
 
 export function PostDetail({ id }: { id: string }) {
   const s = useReds();
@@ -22,6 +23,32 @@ export function PostDetail({ id }: { id: string }) {
 
   const [versionSel, setVersionSel] = useState<string | null>(null);
   const [tagDraft, setTagDraft] = useState("");
+
+  /**
+   * This post's own usage, from the ledger.
+   *
+   * A scoped query rather than a slice of the shared report: the workspace
+   * report is aggregated, and one post's caption-versus-image split is not
+   * recoverable from it. The `Post` columns this card used to read hold only
+   * the caption call -- images were never costed there at all.
+   */
+  const [postUsage, setPostUsage] = useState<UsageReport | null>(null);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    setPostUsage(null);
+
+    fetch(`/api/usage?postId=${encodeURIComponent(id)}`, { signal: ac.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.allTime) setPostUsage(data as UsageReport);
+      })
+      .catch(() => {
+        /* the card falls back to showing nothing rather than a wrong figure */
+      });
+
+    return () => ac.abort();
+  }, [id]);
 
   if (!post) {
     return (
@@ -53,9 +80,26 @@ export function PostDetail({ id }: { id: string }) {
   const postPlatform: Platform = post.platforms[0] ?? "instagram";
   const wide = s.vw >= 1100;
 
+  // The ledger's totals for this post once they arrive, and the post's own
+  // caption-only columns until then -- never a mix, so the header cannot show
+  // ledger tokens beside a post-column cost.
+  // Guarded on having events, not merely on the report having arrived: a post
+  // generated before the ledger existed gets an empty report, and treating
+  // that as authoritative showed "0 tokens / not priced" beside a card that
+  // was correctly falling back to the post's own columns.
+  const led = postUsage?.allTime.totals;
+  const ledger = led && led.calls > 0 ? led : undefined;
   const meters = [
-    { value: num(tok), label: "tokens total" },
-    { value: "est. " + inr(post.usage.estimatedCostInr), label: "cost of iteration" },
+    { value: num(ledger?.tokens ?? tok), label: "tokens total" },
+    {
+      value:
+        ledger != null
+          ? ledger.costInr == null
+            ? "not priced"
+            : "est. " + inrCost(ledger.costInr)
+          : "est. " + inrCost(post.usage.estimatedCostInr),
+      label: "cost of iteration",
+    },
     { value: (post.usage.generationMs / 1000).toFixed(1) + "s", label: "generation time" },
     { value: String(post.usage.runs), label: post.usage.runs === 1 ? "run" : "runs" },
   ];
@@ -257,12 +301,36 @@ export function PostDetail({ id }: { id: string }) {
           <GenerationCard
             post={post}
             modelLabel={model?.label ?? null}
-            rows={[
-              { label: "Tokens", value: num(tok) },
-              { label: "Cost", value: "est. " + inr(post.usage.estimatedCostInr) },
-              { label: "Duration", value: (post.usage.generationMs / 1000).toFixed(1) + "s" },
-              { label: post.usage.runs === 1 ? "Run" : "Runs", value: String(post.usage.runs) },
-            ]}
+            rows={(() => {
+              const u = postUsage?.allTime;
+              const money = (v: number | null | undefined) =>
+                v == null ? "not priced" : "est. " + inrCost(v);
+
+              // Until the ledger answers, the post's own recorded totals stand
+              // in. They cover the caption call only, so they are labelled as
+              // such rather than presented as the whole bill.
+              if (!u || u.totals.calls === 0) {
+                return [
+                  { label: "Tokens (caption)", value: num(tok) },
+                  { label: "Cost (caption)", value: money(post.usage.estimatedCostInr) },
+                  { label: "Duration", value: (post.usage.generationMs / 1000).toFixed(1) + "s" },
+                  { label: post.usage.runs === 1 ? "Run" : "Runs", value: String(post.usage.runs) },
+                ];
+              }
+
+              return [
+                { label: "Tokens", value: num(u.totals.tokens) },
+                { label: "Total cost", value: money(u.totals.costInr) },
+                { label: "Caption", value: `${num(u.byKind.caption.tokens)} tok · ${money(u.byKind.caption.costInr)}` },
+                {
+                  label: "Images",
+                  value: `${u.byKind.image.images} · ${num(u.byKind.image.tokens)} tok · ${money(u.byKind.image.costInr)}`,
+                },
+                { label: "Calls", value: `${u.totals.ok} ok` + (u.totals.failed ? ` · ${u.totals.failed} failed` : "") },
+                { label: "Duration", value: (post.usage.generationMs / 1000).toFixed(1) + "s" },
+                { label: post.usage.runs === 1 ? "Run" : "Runs", value: String(post.usage.runs) },
+              ];
+            })()}
           />
         </aside>
       </div>
