@@ -19,6 +19,7 @@ export interface Model {
   id: string;
   label: string;
   provider: string;
+  apiModelId?: string | null;
   role: ModelRole;
   inputPricePerMTokInr: number;
   outputPricePerMTokInr: number;
@@ -162,6 +163,7 @@ export interface PickerSpec {
 export interface NewModelDraft {
   label: string;
   provider: string;
+  apiModelId: string;
   key: string;
   role: ModelRole;
   maxTokens: number;
