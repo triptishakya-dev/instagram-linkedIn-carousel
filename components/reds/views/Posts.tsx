@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { ApiClientError, deletePost } from "@/lib/api-client";
 import { PILL, STATES } from "@/lib/reds/data";
 import { MONO, absDT, inr, num, relDT } from "@/lib/reds/format";
 import { EmptyState } from "../charts";
@@ -35,6 +36,22 @@ const VIEWS: { label: string; states: PostState[]; sort: { col: string; dir: "as
   { label: "Scheduled this week", states: ["scheduled"], sort: [{ col: "scheduled", dir: "asc" }], groupBy: "scheduledDay" },
   { label: "Failed", states: ["failed"], sort: [{ col: "runs", dir: "desc" }], groupBy: "goal" },
 ];
+
+/** What the server said when it refused a delete, or a plain fallback. */
+function refusalOf(rejected: PromiseRejectedResult): string {
+  const err = rejected.reason;
+  if (err instanceof ApiClientError) return err.message;
+  return err instanceof Error ? err.message : "Could not delete that post.";
+}
+
+/**
+ * Post ids with a delete in flight.
+ *
+ * Module scope rather than a ref, for the same reason as in Goals: the guard
+ * has to be readable synchronously from the confirm dialog's callback, and
+ * that callback is built into the `bulkActions` array during render.
+ */
+const inFlightDeletes = new Set<string>();
 
 interface Section {
   key: string;
@@ -164,12 +181,94 @@ function PostsInner({ now }: { now: number }) {
   }, 0);
   const allSel = pageRows.length > 0 && pageRows.every((p) => s.sel[p.id]);
 
+  /** True while a delete request is out, so the dialog can say so. */
+  const [deleting, setDeleting] = useState(false);
+
+  /**
+   * Deletes for real, then removes from the table only what the server
+   * actually dropped — a refused delete must not read as a successful one.
+   */
+  const runDelete = async (ids: string[]) => {
+    const targets = ids.filter((id) => !inFlightDeletes.has(id));
+    // The confirm dialog stays open until the requests land, so a second click
+    // would arrive before any state update could disable the button.
+    if (targets.length === 0) return;
+    targets.forEach((id) => inFlightDeletes.add(id));
+    setDeleting(true);
+
+    try {
+      const results = await Promise.allSettled(targets.map((id) => deletePost(id)));
+      const gone = targets.filter((_, i) => results[i].status === "fulfilled");
+      const refused = results.filter(
+        (r): r is PromiseRejectedResult => r.status === "rejected",
+      );
+
+      s.ask(null);
+
+      if (gone.length) {
+        s.setPosts((ps) => ps.filter((p) => !gone.includes(p.id)));
+        s.setSel((sel) => {
+          const next = { ...sel };
+          gone.forEach((id) => delete next[id]);
+          return next;
+        });
+      }
+
+      s.toast(
+        refused.length === 0
+          ? `${gone.length} post${gone.length === 1 ? "" : "s"} deleted`
+          : gone.length === 0
+            // One refusal is worth quoting: the server says why, and with a
+            // single post selected that message is the whole answer.
+            ? refusalOf(refused[0])
+            : `${gone.length} deleted, ${refused.length} could not be removed — ${refusalOf(refused[0])}`,
+      );
+    } finally {
+      targets.forEach((id) => inFlightDeletes.delete(id));
+      setDeleting(false);
+    }
+  };
+
+  const askDelete = (ids: string[]) => {
+    const targets = ids
+      .map((id) => s.posts.find((p) => p.id === id))
+      .filter((p): p is Post => !!p);
+    if (targets.length === 0) return;
+
+    const one = targets.length === 1;
+    const live = targets.filter((p) => p.state === "published");
+    const busy = targets.filter((p) => p.state === "generating");
+
+    s.ask({
+      title: one ? "Delete this post?" : `Delete ${targets.length} posts?`,
+      body: [
+        one
+          ? "The post, its slides, its scheduled targets and the images behind them are removed. This cannot be undone."
+          : "The posts, their slides, their scheduled targets and the images behind them are removed. This cannot be undone.",
+        live.length
+          ? `${live.length} of ${one ? "these" : "them"} ${live.length === 1 ? "has" : "have"} already published — ` +
+            "deleting the record here does not take anything down from Instagram or LinkedIn."
+          : "",
+        busy.length
+          ? `${busy.length} ${busy.length === 1 ? "is" : "are"} publishing right now and will be refused.`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      items: targets.slice(0, 6).map((p) => ({ label: `${p.id} — ${STATES[p.state].l}` })),
+      actionLabel: deleting ? "Deleting…" : one ? "Delete post" : `Delete ${targets.length} posts`,
+      border: "1px solid var(--red)",
+      fg: "var(--red)",
+      run: () => void runDelete(targets.map((p) => p.id)),
+    });
+  };
+
   const bulkActions = [
     { label: "Approve", fg: "var(--fg2)", br: "var(--border)", run: () => { selIds.forEach((id) => s.patchPost(id, { state: "scheduled" })); s.toast(selIds.length + " posts approved"); s.setSel({}); } },
     { label: "Reschedule", fg: "var(--fg2)", br: "var(--border)", run: () => s.toast("Reschedule sheet is not wired in this pass") },
     { label: "Regenerate", fg: "var(--fg2)", br: "var(--border)", run: () => s.toast("Regenerating " + selIds.length + " posts — est. " + inr(selCostVal)) },
     { label: "Change model", fg: "var(--fg2)", br: "var(--border)", run: () => s.toast(s.models[0] ? "Model changed to " + s.models[0].label : "No models configured — add one in Accounts") },
-    { label: "Delete", fg: "var(--red)", br: "var(--red-br)", run: () => { const old = s.posts; s.setPosts((ps) => ps.filter((p) => !s.sel[p.id])); s.setSel({}); s.toast(selIds.length + " posts deleted", () => s.setPosts(old)); } },
+    { label: "Delete", fg: "var(--red)", br: "var(--red-br)", run: () => askDelete(selIds) },
   ];
 
   const anyFilter = s.filterStates.length > 0 || s.filterGoal !== "all";
@@ -351,8 +450,11 @@ function PostsInner({ now }: { now: number }) {
                 const st = STATES[p.state];
                 const pill = PILL[st.t];
                 const idx = scrub && scrub.id === p.id ? scrub.i : 0;
-                const sl = p.slides[Math.min(idx, p.slides.length - 1)];
-                const tint = s.assetById(sl.assetId)?.tint || "var(--n200)";
+                // A post that has not been generated yet has no slides at all,
+                // so the row renders an empty carousel rather than reaching into
+                // an empty array.
+                const sl = p.slides.length > 0 ? p.slides[Math.min(idx, p.slides.length - 1)] : undefined;
+                const tint = (sl ? s.assetById(sl.assetId)?.tint : null) || "var(--n200)";
                 const tok = p.usage.inputTokens + p.usage.outputTokens;
                 const ig = p.platforms.includes("instagram");
                 const li = p.platforms.includes("linkedin");
@@ -401,7 +503,7 @@ function PostsInner({ now }: { now: number }) {
                             {/* A generated slide has a real rendered image; the
                                 tint behind it is the fallback for one that does
                                 not, so the cell never shows a broken image. */}
-                            {sl.previewUrl ? (
+                            {sl?.previewUrl ? (
                               <img
                                 src={sl.previewUrl}
                                 alt=""
@@ -409,8 +511,8 @@ function PostsInner({ now }: { now: number }) {
                                 style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
                               />
                             ) : null}
-                            <span style={{ position: "relative", textShadow: sl.previewUrl ? "0 1px 2px rgba(0,0,0,.8)" : "none", color: sl.previewUrl ? "#fff" : "var(--fg3)" }}>
-                              {sl.index + 1}/{p.slides.length}
+                            <span style={{ position: "relative", textShadow: sl?.previewUrl ? "0 1px 2px rgba(0,0,0,.8)" : "none", color: sl?.previewUrl ? "#fff" : "var(--fg3)" }}>
+                              {sl ? sl.index + 1 : 0}/{p.slides.length}
                             </span>
                           </span>
                           <span style={{ marginLeft: 7, fontSize: 11, color: "var(--fg3)", fontFamily: MONO }}>
