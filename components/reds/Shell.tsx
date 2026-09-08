@@ -3,7 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useMemo, type ReactNode } from "react";
 import { NAV } from "@/lib/reds/data";
-import { inr, num } from "@/lib/reds/format";
+import { inr, inrCost, num } from "@/lib/reds/format";
 import { useReds } from "./store";
 import { Overlays } from "./overlays";
 
@@ -42,9 +42,22 @@ export function Shell({ children }: { children: ReactNode }) {
   const crumb = route === "detail" ? "Posts" : route === "goal" ? "Goals" : "";
   const crumbHref = route === "detail" ? "/posts" : "/goals";
 
+  /**
+   * Read from the shared usage report rather than summed here.
+   *
+   * This footer used to add up `posts` itself while the usage page filtered
+   * the same posts by a date generation never sets, so the two reported 1,822
+   * tokens and 0 for the same workspace. One aggregation, one answer.
+   *
+   * The bar is the month against the cap, which is what a monthly cap means --
+   * the label previously summed every post ever and compared that to it.
+   */
   const budget = useMemo(() => {
-    const used = s.posts.reduce((a, p) => a + p.usage.inputTokens + p.usage.outputTokens, 0);
+    const t = s.usage?.period.totals;
+    const used = t?.tokens ?? 0;
     const pct = Math.min(100, Math.round((used / s.budgetCap) * 100));
+    const cost = t?.costInr;
+
     return {
       pct,
       pctLabel: pct + "%",
@@ -55,10 +68,12 @@ export function Shell({ children }: { children: ReactNode }) {
         num(used) +
         " of " +
         num(s.budgetCap) +
-        " — est. " +
-        inr(s.posts.reduce((a, p) => a + p.usage.estimatedCostInr, 0)),
+        // Null cost means nothing in the period carries a price yet; "est. ₹0"
+        // would claim the month was free.
+        (cost == null ? "" : " — est. " + inrCost(cost)) +
+        (t?.unpricedCalls ? ` · ${t.unpricedCalls} unpriced` : ""),
     };
-  }, [s.posts, s.budgetCap]);
+  }, [s.usage, s.budgetCap]);
 
   const nav = NAV.map((n) => {
     const on =
