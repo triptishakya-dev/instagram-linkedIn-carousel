@@ -68,6 +68,15 @@ export type ChatOptions = {
   user: string;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * The provider key for this model, when the `AiModel` row carries its own.
+   *
+   * The proxy honours an `api_key` in the request body and uses it in place of
+   * the one from its config, so a workspace that stored its own key bills to
+   * its own account. Omitted means the proxy's environment key answers, which
+   * is the shared default.
+   */
+  apiKey?: string;
   signal?: AbortSignal;
 };
 
@@ -87,6 +96,10 @@ export async function chatCompletion(opts: ChatOptions): Promise<ChatResult> {
       messages,
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      // Overrides the proxy's own key for this one call. Verified against the
+      // running proxy: a wrong key here fails the call rather than being
+      // ignored, which is the whole point of storing one per model.
+      ...(opts.apiKey ? { api_key: opts.apiKey } : {}),
     }),
     signal: opts.signal,
   });
@@ -99,11 +112,16 @@ export async function chatCompletion(opts: ChatOptions): Promise<ChatResult> {
   const text = data?.choices?.[0]?.message?.content;
 
   if (typeof text !== "string" || !text.trim()) {
-    // A 200 with no content is usually a truncation: the model spent its
-    // budget on reasoning tokens and emitted nothing. Silently storing an
-    // empty caption would look like a successful run.
+    // A 200 with no content is nearly always a reasoning model spending its
+    // whole budget before writing a word, so the budget is named: without it
+    // the message sends you looking at the prompt instead of at Max tokens.
+    const budget = opts.maxTokens;
     throw new GenerationError(
-      "The model returned no text. It may have hit the token limit before writing anything.",
+      `${opts.model} returned no text` +
+        (budget
+          ? `, having used its ${budget}-token budget. A reasoning model spends that budget ` +
+            "thinking before it writes, so raise Max tokens on this model in Accounts."
+          : ". It may have hit the token limit before writing anything."),
       200,
       opts.model,
     );
@@ -117,19 +135,6 @@ export async function chatCompletion(opts: ChatOptions): Promise<ChatResult> {
       outputTokens: Number(data?.usage?.completion_tokens ?? 0),
     },
   };
-}
-
-/** Which models the proxy can currently serve, by `model_name`. */
-export async function listProxyModels(signal?: AbortSignal): Promise<string[]> {
-  const res = await fetch(`${baseUrl()}/v1/models`, {
-    headers: { authorization: `Bearer ${masterKey()}` },
-    signal,
-  });
-  if (!res.ok) throw new GenerationError(describeProxyError(res.status, await res.text()), res.status);
-  const data = await res.json();
-  return Array.isArray(data?.data)
-    ? data.data.map((m: { id?: unknown }) => String(m.id ?? "")).filter(Boolean)
-    : [];
 }
 
 /**
