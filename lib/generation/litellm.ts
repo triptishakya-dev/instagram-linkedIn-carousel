@@ -10,6 +10,14 @@
 export type ChatUsage = {
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Prompt tokens served from the provider's cache, when it says so.
+   *
+   * Reported inside `usage.prompt_tokens_details` and already counted within
+   * `prompt_tokens`, so this is a breakdown rather than an addition. Null when
+   * the provider does not report it, which most do not.
+   */
+  cachedInputTokens: number | null;
 };
 
 export type ChatResult = {
@@ -17,6 +25,11 @@ export type ChatResult = {
   usage: ChatUsage;
   /** What actually answered, which is not always what was asked for. */
   model: string;
+  /**
+   * The provider's own id for this request, for reconciling a ledger row
+   * against the provider's bill. Null when none came back.
+   */
+  requestId: string | null;
 };
 
 export class GenerationError extends Error {
@@ -127,12 +140,16 @@ export async function chatCompletion(opts: ChatOptions): Promise<ChatResult> {
     );
   }
 
+  const cached = data?.usage?.prompt_tokens_details?.cached_tokens;
+
   return {
     text: text.trim(),
     model: typeof data?.model === "string" ? data.model : opts.model,
+    requestId: typeof data?.id === "string" ? data.id : null,
     usage: {
       inputTokens: Number(data?.usage?.prompt_tokens ?? 0),
       outputTokens: Number(data?.usage?.completion_tokens ?? 0),
+      cachedInputTokens: typeof cached === "number" ? cached : null,
     },
   };
 }
@@ -144,7 +161,10 @@ export async function chatCompletion(opts: ChatOptions): Promise<ChatResult> {
  * pricing rather than a table baked in here.
  */
 export function estimateCostInr(
-  usage: ChatUsage,
+  // Only the two billed counts, not the whole `ChatUsage`: this does not read
+  // the cache breakdown, and demanding it would force every caller to supply a
+  // field it has no use for.
+  usage: { inputTokens: number; outputTokens: number },
   rates: { inputPricePerMTokInr: number; outputPricePerMTokInr: number },
 ): number {
   const input = (usage.inputTokens / 1_000_000) * rates.inputPricePerMTokInr;
