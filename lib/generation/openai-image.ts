@@ -104,11 +104,24 @@ export async function generateOpenAiImage(opts: OpenAiImageOptions): Promise<Gen
     );
   }
 
+  // gpt-image models answer with a `usage` block; older image endpoints do
+  // not. Recorded when present, never invented when absent -- and it does not
+  // price the call, which is billed per image.
+  const usage = data?.usage;
+  const size = opts.aspectRatio ? SIZE_FOR[opts.aspectRatio] : null;
+  const [w, h] = size ? size.split("x").map(Number) : [null, null];
+
   return {
+    width: w,
+    height: h,
+    quality: QUALITY,
     bytes: Buffer.from(b64, "base64"),
     // These models return PNG unless asked otherwise, and the stored
     // extension comes from this rather than from the request.
     mime: typeof data?.output_format === "string" ? `image/${data.output_format}` : "image/png",
     model: typeof data?.model === "string" ? data.model : opts.model,
+    inputTokens: typeof usage?.input_tokens === "number" ? usage.input_tokens : null,
+    outputTokens: typeof usage?.output_tokens === "number" ? usage.output_tokens : null,
+    requestId: typeof data?.id === "string" ? data.id : null,
   };
 }
