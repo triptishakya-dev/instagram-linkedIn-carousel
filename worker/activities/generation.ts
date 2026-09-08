@@ -21,7 +21,9 @@ import { renderImage } from "@/lib/generation/render-image";
 import { aspectRatioOf, extensionForImageMime, imageSize } from "@/lib/generation/image-size";
 import { canEncryptSecrets, decryptSecret } from "@/lib/crypto";
 import { GenerationError, chatCompletion, estimateCostInr } from "@/lib/generation/litellm";
+import { Context } from "@temporalio/activity";
 import { pickImageModel, pickTextModel, type ModelRow } from "@/lib/generation/pick-model";
+import { newInvocationId, recordUsage } from "@/lib/usage/record";
 import {
   resolveGeneration,
   type GoalConfig,
@@ -330,6 +332,9 @@ export type RenderedSlide = {
 export async function renderSlideActivity(input: {
   userId: string;
   postId: string;
+  /** Attribution for the usage ledger; the call is billed to this run and goal. */
+  goalId?: string | null;
+  generationRunId?: string | null;
   order: number;
   prompt: string;
   negativePrompt: string;
@@ -339,13 +344,70 @@ export async function renderSlideActivity(input: {
   imageModelRowId?: string | null;
 }): Promise<RenderedSlide> {
   const apiKey = await modelApiKey(input.imageModelRowId);
+  const billing = await modelBilling(input.imageModelRowId);
 
-  const image = await renderImage({
-    prompt: input.prompt,
-    negativePrompt: input.negativePrompt,
-    aspectRatio: input.aspectRatio as never,
-    model: input.imageModel,
-    apiKey,
+  // Minted before the request, so it names this one invocation. A retry that
+  // calls the provider again mints another and is billed as another.
+  const invocationId = newInvocationId();
+  const startedAt = Date.now();
+
+  const attribution = {
+    userId: input.userId,
+    goalId: input.goalId ?? null,
+    postId: input.postId,
+    generationRunId: input.generationRunId ?? null,
+    modelId: input.imageModelRowId ?? null,
+    provider: billing.provider,
+    apiModelId: input.imageModel,
+    attempt: currentAttempt(),
+  };
+
+  let image;
+  try {
+    image = await renderImage({
+      prompt: input.prompt,
+      negativePrompt: input.negativePrompt,
+      aspectRatio: input.aspectRatio as never,
+      model: input.imageModel,
+      apiKey,
+    });
+  } catch (err) {
+    // A refused or failed image still consumed a request, and often a charge.
+    // No token counts are invented for it: the provider reported none.
+    await recordUsage({
+      invocationId,
+      attribution,
+      outcome: {
+        kind: "IMAGE",
+        imageCount: 0,
+        imagePriceInr: billing.imagePriceInr,
+      },
+      status: "FAILED",
+      latencyMs: Date.now() - startedAt,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
+  await recordUsage({
+    invocationId,
+    attribution,
+    outcome: {
+      kind: "IMAGE",
+      imageCount: 1,
+      imageWidth: image.width ?? null,
+      imageHeight: image.height ?? null,
+      quality: image.quality ?? null,
+      inputTokens: image.inputTokens ?? null,
+      outputTokens: image.outputTokens ?? null,
+      imagePriceInr: billing.imagePriceInr,
+      // gpt-image bills by token and returns the counts, so the row's token
+      // rates price it when no flat per-image rate is set.
+      rates: billing.rates,
+    },
+    status: "OK",
+    latencyMs: Date.now() - startedAt,
+    providerRequestId: image.requestId ?? null,
   });
 
   const extension = extensionForImageMime(image.mime);
@@ -409,6 +471,55 @@ const CAPTION_SYSTEM = [
  * `TOKEN_ENCRYPTION_KEY`, or truncated — is treated as absent, so the call
  * falls back to the proxy's own key instead of failing the whole caption.
  */
+/**
+ * The pricing and provider a model row carries, for the usage ledger.
+ *
+ * Separate from `modelApiKey` because it reads no secret and must not fail the
+ * call: a row with no image price is a gap to report as "not priced", not a
+ * reason to refuse to generate.
+ */
+async function modelBilling(modelRowId: string | null | undefined): Promise<{
+  provider: string;
+  imagePriceInr: number | null;
+  rates: { inputPricePerMTokInr: number; outputPricePerMTokInr: number };
+}> {
+  const row = modelRowId
+    ? await prisma.aiModel.findUnique({
+        where: { id: modelRowId },
+        select: {
+          provider: true,
+          imagePriceInr: true,
+          inputPricePerMTokInr: true,
+          outputPricePerMTokInr: true,
+        },
+      })
+    : null;
+
+  return {
+    provider: row?.provider ?? "unknown",
+    imagePriceInr: row?.imagePriceInr ?? null,
+    rates: {
+      inputPricePerMTokInr: row?.inputPricePerMTokInr ?? 0,
+      outputPricePerMTokInr: row?.outputPricePerMTokInr ?? 0,
+    },
+  };
+}
+
+/**
+ * Temporal's attempt counter for the running activity.
+ *
+ * Attribution only -- a retry that actually called the provider again gets its
+ * own `invocationId` and its own row, because it was charged again. Falls back
+ * to null outside an activity context, which is how the unit tests call in.
+ */
+function currentAttempt(): number | null {
+  try {
+    return Context.current().info.attempt;
+  } catch {
+    return null;
+  }
+}
+
 async function modelApiKey(modelRowId: string | null | undefined): Promise<string> {
   if (!modelRowId) {
     throw new GenerationError("No model row to read a key from.");
@@ -449,6 +560,10 @@ async function modelApiKey(modelRowId: string | null | undefined): Promise<strin
 
 export async function generateCaptionActivity(input: {
   postId: string;
+  /** Attribution for the usage ledger; the call is billed to this run and goal. */
+  userId: string;
+  goalId?: string | null;
+  generationRunId?: string | null;
   captionSeed: string;
   topic: string;
   platform: Platform;
@@ -488,8 +603,26 @@ export async function generateCaptionActivity(input: {
   }
 
   const apiKey = await modelApiKey(input.textModelRowId);
+  const billing = await modelBilling(input.textModelRowId);
 
-  const result = await chatCompletion({
+  // Minted before the request, so it names this one invocation.
+  const invocationId = newInvocationId();
+  const startedAt = Date.now();
+
+  const attribution = {
+    userId: input.userId,
+    goalId: input.goalId ?? null,
+    postId: input.postId,
+    generationRunId: input.generationRunId ?? null,
+    modelId: input.textModelRowId ?? null,
+    provider: billing.provider,
+    apiModelId: input.textModel,
+    attempt: currentAttempt(),
+  };
+
+  let result;
+  try {
+    result = await chatCompletion({
     model: input.textModel,
     system: CAPTION_SYSTEM,
     user: parts.join("\n"),
@@ -500,7 +633,35 @@ export async function generateCaptionActivity(input: {
     ...(input.temperature !== null && input.temperature !== undefined
       ? { temperature: input.temperature }
       : {}),
-    apiKey,
+      apiKey,
+    });
+  } catch (err) {
+    // Null rather than zero: the provider reported no usage, which is not the
+    // same as a call that used none. Zero would read as a free call.
+    await recordUsage({
+      invocationId,
+      attribution,
+      outcome: { kind: "CAPTION", inputTokens: null, outputTokens: null, rates: input.rates },
+      status: "FAILED",
+      latencyMs: Date.now() - startedAt,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
+  await recordUsage({
+    invocationId,
+    attribution,
+    outcome: {
+      kind: "CAPTION",
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      cachedInputTokens: result.usage.cachedInputTokens,
+      rates: input.rates,
+    },
+    status: "OK",
+    latencyMs: Date.now() - startedAt,
+    providerRequestId: result.requestId,
   });
 
   return {
