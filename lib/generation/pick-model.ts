@@ -1,12 +1,26 @@
 /**
- * Chooses which model actually gets called, and records why.
+ * Chooses which model actually gets called, and refuses when none can be.
  *
- * A goal names an `AiModel` row, but a row is not necessarily callable: it may
- * have no `apiModelId` yet, or name a model the proxy cannot serve because its
- * provider key is absent. Generation still has to produce something, so it
- * falls back — but a silent fallback is a lie by omission. The user configured
- * one model and got another, and the run has to say so.
+ * The `AiModel` rows are the only source of models and of the keys that pay
+ * for them. There is deliberately no built-in fallback: a run that quietly
+ * substituted a different provider's model spent someone's money on output
+ * they did not configure and could not predict, and the substitution was only
+ * visible as a note nobody reads. Nothing configured and usable is an error
+ * with the reasons attached, not a silent redirect.
+ *
+ * "No built-in fallback" is not the same as "no fallback". When no default
+ * names a usable row, the workspace's own rows are searched, and a single
+ * eligible one is used and reported. That still only ever spends on a model
+ * somebody configured -- it just stops requiring them to also remember to
+ * point a settings key at it. An ambiguous search asks rather than guesses.
+ *
+ * Which models exist is not cross-checked against the proxy either. The proxy
+ * routes whatever it is asked for using the key sent with the request, so the
+ * database is the authority and a name it cannot serve fails at call time with
+ * the provider's own message.
  */
+
+import { GenerationError } from "./litellm";
 
 export type ModelRow = {
   id: string;
@@ -15,6 +29,11 @@ export type ModelRow = {
   enabled: boolean;
   inputPricePerMTokInr: number;
   outputPricePerMTokInr: number;
+  /** Which half of generation the row is allowed to serve. */
+  role?: "CAPTION" | "SLIDES" | "BOTH";
+  /** Token ceiling for one call, as configured on the row. */
+  maxTokens?: number;
+  temperature?: number;
 };
 
 export type ModelChoice = {
@@ -24,18 +43,18 @@ export type ModelChoice = {
   modelRowId: string | null;
   rates: { inputPricePerMTokInr: number; outputPricePerMTokInr: number };
   /**
+   * The row's own call settings, so a value typed in Accounts is the one sent.
+   * A reasoning model that cannot finish inside its budget returns nothing, so
+   * this is load-bearing rather than cosmetic.
+   */
+  maxTokens?: number;
+  temperature?: number;
+  /**
    * Set when the goal's own model was not used. Surfaced on the run so the
    * substitution is visible rather than inferred from odd output.
    */
   fallbackReason: string | null;
 };
-
-/** Used when nothing configured can answer. Overridable per environment. */
-export function defaultTextModel(): string {
-  return process.env.GENERATION_FALLBACK_MODEL ?? "gemini-flash-latest";
-}
-
-const ZERO_RATES = { inputPricePerMTokInr: 0, outputPricePerMTokInr: 0 };
 
 function ratesOf(row: ModelRow) {
   return {
@@ -44,71 +63,161 @@ function ratesOf(row: ModelRow) {
   };
 }
 
+/** The row's call settings, omitted rather than defaulted when unset. */
+function callSettingsOf(row: ModelRow) {
+  return {
+    ...(row.maxTokens !== undefined ? { maxTokens: row.maxTokens } : {}),
+    ...(row.temperature !== undefined ? { temperature: row.temperature } : {}),
+  };
+}
+
+/** The parts of a choice that come straight off the row. */
+function chosenFrom(row: ModelRow, fallbackReason: string | null): ModelChoice {
+  return {
+    apiModelId: row.apiModelId as string,
+    modelRowId: row.id,
+    rates: ratesOf(row),
+    ...callSettingsOf(row),
+    fallbackReason,
+  };
+}
+
+/**
+ * Why a row cannot serve this half of generation, or null when it can.
+ *
+ * One predicate for both halves, so "usable" means the same thing whether a
+ * row was named explicitly or found by the search below. When these drifted
+ * apart, a row could be rejected as a named default and then re-offered as a
+ * candidate.
+ */
+function rejectionFor(row: ModelRow, kind: "caption" | "slides"): string | null {
+  if (!row.enabled) return "is disabled.";
+  if (!row.apiModelId) return "has no API model id set.";
+  if (kind === "caption" && row.role === "SLIDES") return "is set to slides only.";
+  if (kind === "slides" && row.role === "CAPTION") return "is set to captions only.";
+  return null;
+}
+
 export type PickModelInput = {
   /** The row the goal names, if it names one that still exists. */
   goalModel: ModelRow | null;
   /** Workspace default, from `settings.defCaptionModel`. */
   workspaceModel: ModelRow | null;
-  /** `model_name`s the proxy advertises. Empty means "cannot check". */
-  servable: string[];
+  /**
+   * Every model the workspace has configured, for the last resort below.
+   *
+   * The defaults above are ids held in an opaque settings blob, written by a
+   * different screen from the one that creates models. Adding a model does not
+   * set them, so "I configured a model and generation says I have none" was
+   * the normal outcome of a first run rather than an edge case. Passing the
+   * rows lets the pick be made from what exists instead of from a pointer
+   * somebody has to remember to set.
+   */
+  available?: ModelRow[];
 };
 
-export function pickTextModel({ goalModel, workspaceModel, servable }: PickModelInput): ModelChoice {
-  // An empty list means the proxy could not be reached for a list, not that it
-  // serves nothing. Treating it as "nothing is servable" would reject every
-  // correctly configured model, so the check is skipped instead.
-  const canServe = (name: string) => servable.length === 0 || servable.includes(name);
+/**
+ * Falls back to the workspace's own rows when no default names a usable one.
+ *
+ * Exactly one eligible row is not a choice, so it is taken and reported. More
+ * than one is a real decision about whose money goes where, and guessing at it
+ * is the silent substitution this module exists to avoid -- so it asks, naming
+ * the candidates. None leaves the original reasons to explain themselves.
+ */
+function lastResort(
+  kind: "caption" | "slides",
+  available: ModelRow[],
+  reasons: string[],
+): ModelChoice {
+  const noun = kind === "caption" ? "caption" : "slide";
+  const verb = kind === "caption" ? "write captions" : "render slides";
+  const eligible = available.filter((r) => rejectionFor(r, kind) === null);
 
-  const candidates: { row: ModelRow | null; whenRejected: (why: string) => string }[] = [
-    {
-      row: goalModel,
-      whenRejected: (why) => why,
-    },
-    {
-      row: workspaceModel,
-      whenRejected: (why) => why,
-    },
+  if (eligible.length === 1) {
+    const row = eligible[0];
+    const why =
+      `No default ${noun} model is set, so the only configured model that can ${verb} ` +
+      `(${row.label}) was used.`;
+    return chosenFrom(row, reasons.length ? `${reasons.join(" ")} ${why}` : why);
+  }
+
+  if (eligible.length > 1) {
+    // Named by label *and* api model id. Labels are free text and nothing
+    // stops two rows sharing one, so "(gpt, gpt)" is a real outcome -- and it
+    // tells the reader nothing about which row to go and pick.
+    throw new GenerationError(
+      `No default ${noun} model is set and ${eligible.length} configured models could ${verb} ` +
+        `(${eligible.map((r) => `${r.label} - ${r.apiModelId}`).join(", ")}). ` +
+        `Set the ${noun} default in Accounts, or narrow one model's role.`,
+    );
+  }
+
+  if (reasons.length) {
+    throw new GenerationError(
+      `No usable ${noun} model. ${reasons.join(" ")} ` +
+        `Fix the model in Accounts, or pick a different default.`,
+    );
+  }
+
+  throw new GenerationError(
+    kind === "caption"
+      ? "No caption model is configured. Add one in Accounts and set it as the default for captions."
+      : "No slide model is configured. Add a model that can generate images in Accounts " +
+        "and set it as the default for slides.",
+  );
+}
+
+export function pickTextModel({
+  goalModel,
+  workspaceModel,
+  available = [],
+}: PickModelInput): ModelChoice {
+  const named = [
+    { row: goalModel, which: "The goal's model" },
+    { row: workspaceModel, which: "The workspace default model" },
   ];
 
   const reasons: string[] = [];
 
-  for (const [index, candidate] of candidates.entries()) {
-    const row = candidate.row;
-    const which = index === 0 ? "The goal's model" : "The workspace default model";
+  for (const [index, { row, which }] of named.entries()) {
     if (!row) continue;
 
-    if (!row.enabled) {
-      reasons.push(`${which} (${row.label}) is disabled.`);
-      continue;
-    }
-    if (!row.apiModelId) {
-      reasons.push(`${which} (${row.label}) has no API model id set.`);
-      continue;
-    }
-    if (!canServe(row.apiModelId)) {
-      reasons.push(`${which} (${row.label}) asks for "${row.apiModelId}", which the proxy does not serve.`);
+    const why = rejectionFor(row, "caption");
+    if (why) {
+      reasons.push(`${which} (${row.label}) ${why}`);
       continue;
     }
 
-    return {
-      apiModelId: row.apiModelId,
-      modelRowId: row.id,
-      rates: ratesOf(row),
-      // Using the workspace default rather than the goal's own model is still
-      // a substitution worth reporting.
-      fallbackReason: index === 0 ? null : reasons.join(" ") || null,
-    };
+    // Using the workspace default rather than the goal's own model is still
+    // a substitution worth reporting.
+    return chosenFrom(row, index === 0 ? null : reasons.join(" ") || null);
   }
 
-  const fallback = defaultTextModel();
-  reasons.push(`Fell back to "${fallback}".`);
+  return lastResort("caption", available, reasons);
+}
 
-  return {
-    apiModelId: fallback,
-    modelRowId: null,
-    // No configured row means no configured pricing; reporting zero cost is
-    // honest, whereas guessing a rate would put invented money on screen.
-    rates: ZERO_RATES,
-    fallbackReason: reasons.join(" "),
-  };
+/**
+ * Which model renders the slides.
+ *
+ * Images were pinned to a constant, so a workspace could configure a slide
+ * model in Accounts and watch every run ignore it. Same contract as the
+ * caption side now: the row decides, a row marked CAPTION cannot serve slides,
+ * and nothing usable is an error rather than a quiet return to the built-in.
+ */
+export function pickImageModel({
+  workspaceModel,
+  available = [],
+}: {
+  workspaceModel: ModelRow | null;
+  available?: ModelRow[];
+}): ModelChoice {
+  const reasons: string[] = [];
+
+  if (workspaceModel) {
+    const why = rejectionFor(workspaceModel, "slides");
+    if (!why) return chosenFrom(workspaceModel, null);
+    reasons.push(`The slide model (${workspaceModel.label}) ${why}`);
+  }
+
+  return lastResort("slides", available, reasons);
 }
