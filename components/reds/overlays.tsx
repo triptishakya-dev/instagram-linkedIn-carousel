@@ -5,7 +5,7 @@ import { ApiClientError, deleteAsset, triggerRun, uploadAsset } from "@/lib/api-
 import { isAllowedAssetMime, MAX_ASSET_BYTES } from "@/lib/media";
 import { PILL, STATES } from "@/lib/reds/data";
 import { MONO, absDT, fmtBytes, inr } from "@/lib/reds/format";
-import { toRedsAsset } from "@/lib/reds/map";
+import { toRedsAsset, toRedsModel } from "@/lib/reds/map";
 import { useReds, seg } from "./store";
 import type { Model, ModelRole, UploadItem } from "@/lib/reds/types";
 
@@ -651,9 +651,20 @@ function NewModelModal() {
   const put = (patch: Partial<typeof d>) => s.setNewModel({ ...d, ...patch });
   const touch = (k: string) => setTouched((t) => ({ ...t, [k]: true }));
 
+  /**
+   * The same modal creates and edits; `id` decides which.
+   *
+   * The one rule that differs is the key. Creating a model needs one, because
+   * nothing can call the provider without it. Editing must not: the stored key
+   * is encrypted and never read back, so an empty field means "keep the one
+   * you have" rather than "this model has no key".
+   */
+  const editing = !!d.id;
+
   const labelBad = !d.label.trim();
   const providerBad = !d.provider.trim();
-  const keyBad = d.key.trim().length < 12;
+  const typedKey = d.key.trim();
+  const keyBad = editing ? typedKey.length > 0 && typedKey.length < 12 : typedKey.length < 12;
   const bad = labelBad || providerBad || keyBad;
   const est = (4200 / 1e6) * Number(d.inPrice) + (1800 / 1e6) * Number(d.outPrice);
 
@@ -663,7 +674,9 @@ function NewModelModal() {
       ? "Name the provider to save."
       : keyBad
         ? "Paste a valid API key to save."
-        : "Saved to this session only.";
+        : editing
+          ? "Changes are saved to the model row."
+          : "Saved to this session only.";
 
   const textFields = [
     { k: "label" as const, label: "Model label", placeholder: "Claude Sonnet 4.6", bad: labelBad, msg: "The label names this model everywhere in the product." },
@@ -686,10 +699,10 @@ function NewModelModal() {
   const close = () => { s.setNewModel(null); setTouched({}); setReveal(false); };
 
   return (
-    <div role="dialog" aria-label="Add model" style={{ ...SCRIM, alignItems: "center", justifyContent: "center", padding: 24 }}>
+    <div role="dialog" aria-label={editing ? "Edit model" : "Add model"} style={{ ...SCRIM, alignItems: "center", justifyContent: "center", padding: 24 }}>
       <div style={{ ...PANEL, width: "min(560px,94vw)", maxHeight: "86vh", display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 20px", borderBottom: "1px solid var(--border)" }}>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Add model</h2>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{editing ? "Edit model" : "Add model"}</h2>
           <span style={{ flex: "1 1 auto" }} />
           <button type="button" onClick={close} style={{ border: 0, background: "transparent", color: "var(--fg2)", fontSize: 13 }}>Close</button>
         </div>
@@ -718,7 +731,7 @@ function NewModelModal() {
                 value={d.key}
                 onChange={(e) => put({ key: e.target.value })}
                 onBlur={() => touch("key")}
-                placeholder="sk-ant-…"
+                placeholder={editing ? "Leave blank to keep the stored key" : "sk-ant-…"}
                 aria-invalid={keyBad}
                 style={{ flex: "1 1 auto", minWidth: 0, padding: "9px 11px", border: `1px solid ${keyBad && touched.key ? "var(--red)" : "var(--border)"}`, borderRadius: "var(--r3)", background: "var(--surface2)", color: "var(--fg)", fontFamily: MONO, fontSize: 12 }}
               />
@@ -727,7 +740,9 @@ function NewModelModal() {
               </button>
             </span>
             <span style={{ fontSize: 12, color: "var(--fg3)" }}>
-              Held in memory for this session only — it is never written to storage or sent anywhere but the provider.
+              {editing
+                ? "The stored key cannot be read back. Leave this blank to keep it, or paste a new one to replace it."
+                : "Held in memory for this session only — it is never written to storage or sent anywhere but the provider."}
             </span>
             {keyBad && touched.key ? (
               <span style={{ fontSize: 12, color: "var(--red)" }}>That key looks too short — paste the full provider key.</span>
@@ -795,54 +810,54 @@ function NewModelModal() {
             title={hint}
             onClick={async () => {
               if (bad) { touch("label"); touch("provider"); touch("key"); return; }
+
+              // Everything except the key, which is conditional below.
+              const body: Record<string, unknown> = {
+                label: d.label.trim(),
+                provider: d.provider.trim(),
+                apiModelId: d.apiModelId.trim() || null,
+                role: d.role.toUpperCase(),
+                inputPricePerMTokInr: Number(d.inPrice),
+                outputPricePerMTokInr: Number(d.outPrice),
+                maxTokens: Number(d.maxTokens),
+                temperature: Number(d.temperature),
+                enabled: d.enabled,
+              };
+
+              // Sent only when one was typed. An empty string would fail the
+              // server's length check and, worse, read as an intent to clear a
+              // key the user never touched.
+              if (typedKey) body.key = typedKey;
+
               try {
-                const res = await fetch("/api/models", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    label: d.label.trim(),
-                    provider: d.provider.trim(),
-                    apiModelId: d.apiModelId.trim() || null,
-                    role: d.role.toUpperCase(),
-                    inputPricePerMTokInr: Number(d.inPrice),
-                    outputPricePerMTokInr: Number(d.outPrice),
-                    maxTokens: Number(d.maxTokens),
-                    temperature: Number(d.temperature),
-                    enabled: d.enabled,
-                    key: d.key.trim(),
-                  }),
-                });
+                const res = await fetch(
+                  d.id ? `/api/models/${d.id}` : "/api/models",
+                  {
+                    method: d.id ? "PUT" : "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                  },
+                );
 
                 if (!res.ok) {
                   const errData = await res.json().catch(() => ({}));
-                  throw new Error(errData.message || "Failed to add model.");
+                  throw new Error(errData?.error?.message || errData.message || "Failed to save model.");
                 }
 
-                const savedModel = await res.json();
-                const formattedModel: Model = {
-                  id: savedModel.id,
-                  label: savedModel.label,
-                  provider: savedModel.provider,
-                  apiModelId: savedModel.apiModelId || undefined,
-                  role: (savedModel.role || "BOTH").toLowerCase() as ModelRole,
-                  inputPricePerMTokInr: savedModel.inputPricePerMTokInr,
-                  outputPricePerMTokInr: savedModel.outputPricePerMTokInr,
-                  maxTokens: savedModel.maxTokens,
-                  temperature: savedModel.temperature,
-                  enabled: savedModel.enabled,
-                  keyLast4: savedModel.keyLast4 || undefined,
-                };
+                const saved = toRedsModel(await res.json());
 
-                s.setModels((ms) => [...ms, formattedModel]);
-                s.toast(d.label.trim() + " added to database");
+                // Replaced in place when editing, so the card keeps its
+                // position in the grid instead of jumping to the end.
+                s.setModels((ms) => (d.id ? ms.map((m) => (m.id === d.id ? saved : m)) : [...ms, saved]));
+                s.toast(saved.label + (d.id ? " updated" : " added to database"));
                 close();
-              } catch (err: any) {
-                s.toast(err.message || "Failed to add model");
+              } catch (err) {
+                s.toast(err instanceof Error ? err.message : "Failed to save model");
               }
             }}
             style={{ padding: "7px 13px", border: 0, borderRadius: "var(--r3)", background: "var(--green)", color: "var(--on-green)", fontSize: 13, fontWeight: 600, opacity: bad ? 0.5 : 1 }}
           >
-            Add model
+            {editing ? "Update model" : "Add model"}
           </button>
         </div>
       </div>
