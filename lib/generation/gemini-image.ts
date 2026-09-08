@@ -26,6 +26,29 @@ export type GeneratedImage = {
   /** Whatever the model actually returned — it picks jpeg or png itself. */
   mime: string;
   model: string;
+  /**
+   * Token counts the provider reported, where it reports any.
+   *
+   * Gemini answers `generateContent` with `usageMetadata` even for an image,
+   * and this was being discarded. Recorded because it is authoritative usage;
+   * it does not price the call, which is billed per image.
+   *
+   * Null means the provider said nothing, which is not the same as zero.
+   */
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  /** The provider's own request id, when one comes back. */
+  requestId?: string | null;
+  /**
+   * What the image was billed at, when the provider's request fixes it.
+   *
+   * Recorded on the usage event even though pricing is currently one flat rate
+   * per image: real image pricing varies by size and quality, so capturing
+   * them now means history can be repriced rather than lost.
+   */
+  width?: number | null;
+  height?: number | null;
+  quality?: string | null;
 };
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
@@ -98,10 +121,15 @@ export async function generateImage(opts: GenerateImageOptions): Promise<Generat
     };
     if (!b64) continue;
 
+    const meta = data?.usageMetadata;
+
     return {
       bytes: Buffer.from(b64, "base64"),
       mime: mimeType ?? mime_type ?? "image/png",
       model,
+      inputTokens: typeof meta?.promptTokenCount === "number" ? meta.promptTokenCount : null,
+      outputTokens: typeof meta?.candidatesTokenCount === "number" ? meta.candidatesTokenCount : null,
+      requestId: typeof data?.responseId === "string" ? data.responseId : null,
     };
   }
 
