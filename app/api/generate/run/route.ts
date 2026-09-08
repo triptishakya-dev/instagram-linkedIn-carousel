@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { ApiError, readJson, toErrorResponse } from "@/lib/http";
-import { CONTENT_TASK_QUEUE, temporalClient } from "@/worker/content-worker";
+import { CONTENT_TASK_QUEUE, temporalClient } from "@/lib/temporal";
 import { generateForGoalWorkflow } from "@/worker/workflows/generate-post";
 
 const runSchema = z.object({
