@@ -21,8 +21,6 @@ import type { AspectRatio } from "@/prompt/image-generator";
 /** Verified against this project's key; both return inline bytes. */
 export const IMAGE_MODELS = ["gemini-3-pro-image", "gemini-2.5-flash-image"] as const;
 
-export const DEFAULT_IMAGE_MODEL: string = IMAGE_MODELS[0];
-
 export type GeneratedImage = {
   bytes: Buffer;
   /** Whatever the model actually returned — it picks jpeg or png itself. */
@@ -36,17 +34,22 @@ export type GenerateImageOptions = {
   prompt: string;
   negativePrompt?: string;
   aspectRatio?: AspectRatio;
-  model?: string;
+  /** Required: there is no built-in image model to fall back to. */
+  model: string;
+  /**
+   * The key stored on the `AiModel` row for this model.
+   *
+   * Required, and deliberately not defaulted to a deployment-wide
+   * `GEMINI_API_KEY`: the key that pays for a call belongs to the row that
+   * named the model, so a row with no key is a configuration gap to report
+   * rather than someone else's bill to run up.
+   */
+  apiKey: string;
   signal?: AbortSignal;
 };
 
 export async function generateImage(opts: GenerateImageOptions): Promise<GeneratedImage> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new GenerationError("GEMINI_API_KEY is not set, so no image can be generated.");
-  }
-
-  const model = opts.model ?? DEFAULT_IMAGE_MODEL;
+  const { apiKey, model } = opts;
 
   // The negative prompt is folded into the text: `generateContent` has no
   // separate field for it, unlike Imagen's predict body.
