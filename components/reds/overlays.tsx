@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { deleteAsset, uploadAsset } from "@/lib/api-client";
+import { ApiClientError, deleteAsset, triggerRun, uploadAsset } from "@/lib/api-client";
 import { isAllowedAssetMime, MAX_ASSET_BYTES } from "@/lib/media";
 import { PILL, STATES } from "@/lib/reds/data";
 import { MONO, absDT, fmtBytes, inr } from "@/lib/reds/format";
@@ -51,9 +51,9 @@ function Palette() {
     {
       label: "Posts",
       items: s.posts
-        .filter((p) => (p.id + " " + p.slides[0].headline).toLowerCase().includes(q))
+        .filter((p) => (p.id + " " + (p.slides[0]?.headline ?? "")).toLowerCase().includes(q))
         .slice(0, 5)
-        .map((p) => ({ key: p.id, label: p.slides[0].headline, href: `/posts/${p.id}` })),
+        .map((p) => ({ key: p.id, label: p.slides[0]?.headline || p.id, href: `/posts/${p.id}` })),
     },
     {
       label: "Goals",
@@ -124,7 +124,38 @@ function Palette() {
 
 function GenerateSheet() {
   const s = useReds();
+  const [submitting, setSubmitting] = useState<string | null>(null);
+
   if (!s.sheet) return null;
+
+  const activeGoals = s.goals.filter((g) => g.status === "active");
+
+  const handleRun = async (goalId?: string, goalName?: string) => {
+    const key = goalId || "all";
+    if (submitting) return;
+    setSubmitting(key);
+
+    try {
+      const result = await triggerRun(goalId ? { goalIds: [goalId] } : {});
+      const count = result.started?.length ?? 0;
+      s.setSheet(false);
+      s.toast(
+        goalName
+          ? `Run started for "${goalName}"`
+          : `Run started for ${count} goal${count === 1 ? "" : "s"}`,
+      );
+      await s.refreshPosts();
+      s.go("/posts");
+    } catch (err: any) {
+      s.toast(
+        err instanceof ApiClientError
+          ? err.message
+          : err.message || "Failed to start generation run",
+      );
+    } finally {
+      setSubmitting(null);
+    }
+  };
 
   return (
     <div role="dialog" aria-label="Generate now" style={{ ...SCRIM, justifyContent: "flex-end" }}>
@@ -140,22 +171,77 @@ function GenerateSheet() {
           <p style={{ margin: "0 0 4px", fontSize: 13, color: "var(--fg2)" }}>
             Pick a goal to run once. The run produces one post per targeted platform and lands in Posts as a draft.
           </p>
-          {s.goals.map((g) => (
+
+          {activeGoals.length > 1 ? (
             <button
-              key={g.id}
               type="button"
-              onClick={() => {
-                s.setSheet(false);
-                s.toast("Run queued for " + g.name);
+              disabled={!!submitting}
+              onClick={() => handleRun()}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                padding: "10px 14px",
+                border: "1px solid var(--green-line)",
+                borderRadius: "var(--r3)",
+                background: "var(--green-tint)",
+                color: "var(--green-text)",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: submitting ? "default" : "pointer",
+                opacity: submitting === "all" ? 0.6 : 1,
               }}
-              style={{ display: "flex", flexDirection: "column", gap: 4, textAlign: "left", padding: 12, border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)" }}
             >
-              <span style={{ fontSize: 14, color: "var(--fg)" }}>{g.name}</span>
-              <span style={{ fontSize: 12, color: "var(--fg2)" }}>
-                {g.platforms.join(" + ")} · {g.schedule.cadence} · {s.modelById(g.modelId)?.label}
-              </span>
+              {submitting === "all" ? "Starting run..." : `Run all ${activeGoals.length} active goals`}
             </button>
-          ))}
+          ) : null}
+
+          {activeGoals.length === 0 ? (
+            <div style={{ padding: "16px", border: "1px dashed var(--border)", borderRadius: "var(--r3)", color: "var(--fg2)", fontSize: 13, textAlign: "center" }}>
+              No active goals found. Create or activate a goal in Goals to generate posts.
+            </div>
+          ) : (
+            activeGoals.map((g) => {
+              const hasPrompt = !!g.imagePrompt?.trim() || !!g.captionPrompt?.trim();
+              const isBusy = submitting === g.id;
+              return (
+                <button
+                  key={g.id}
+                  type="button"
+                  disabled={!!submitting || !hasPrompt}
+                  onClick={() => handleRun(g.id, g.name)}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    textAlign: "left",
+                    padding: 12,
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--r3)",
+                    background: "var(--surface)",
+                    opacity: !hasPrompt ? 0.6 : isBusy ? 0.5 : 1,
+                    cursor: !hasPrompt || submitting ? "default" : "pointer",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: "var(--fg)" }}>{g.name}</span>
+                    {isBusy ? (
+                      <span style={{ fontSize: 12, color: "var(--green-text)" }}>Starting...</span>
+                    ) : null}
+                  </div>
+                  <span style={{ fontSize: 12, color: "var(--fg2)" }}>
+                    {g.platforms.join(" + ")} · {g.schedule.cadence} · {s.modelById(g.modelId)?.label || "Default model"}
+                  </span>
+                  {!hasPrompt ? (
+                    <span style={{ fontSize: 11, color: "var(--red)" }}>
+                      Missing prompt — add an image or caption prompt to this goal to run generation.
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })
+          )}
         </div>
       </div>
     </div>
@@ -582,6 +668,7 @@ function NewModelModal() {
   const textFields = [
     { k: "label" as const, label: "Model label", placeholder: "Claude Sonnet 4.6", bad: labelBad, msg: "The label names this model everywhere in the product." },
     { k: "provider" as const, label: "Provider", placeholder: "Anthropic", bad: providerBad, msg: "Name the provider so pricing is attributable." },
+    { k: "apiModelId" as const, label: "API Model ID", placeholder: "claude-sonnet-4-5 or gpt-4o", bad: false, msg: "The exact model identifier passed to LiteLLM / provider API." },
   ];
 
   const numbers = [
@@ -715,6 +802,7 @@ function NewModelModal() {
                   body: JSON.stringify({
                     label: d.label.trim(),
                     provider: d.provider.trim(),
+                    apiModelId: d.apiModelId.trim() || null,
                     role: d.role.toUpperCase(),
                     inputPricePerMTokInr: Number(d.inPrice),
                     outputPricePerMTokInr: Number(d.outPrice),
@@ -735,6 +823,7 @@ function NewModelModal() {
                   id: savedModel.id,
                   label: savedModel.label,
                   provider: savedModel.provider,
+                  apiModelId: savedModel.apiModelId || undefined,
                   role: (savedModel.role || "BOTH").toLowerCase() as ModelRole,
                   inputPricePerMTokInr: savedModel.inputPricePerMTokInr,
                   outputPricePerMTokInr: savedModel.outputPricePerMTokInr,
