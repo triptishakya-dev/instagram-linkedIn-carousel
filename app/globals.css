@@ -43,6 +43,12 @@
   --red: var(--r600); --red-bg: var(--r50); --red-br: var(--r100);
   --amber: var(--a700); --amber-bg: var(--a50); --amber-br: var(--a100);
 
+  /* Platform brand accents. Tokens rather than literals in the component so
+     the dark theme can lift them to a readable contrast -- LinkedIn's own
+     #0A66C2 goes nearly invisible on the dark surface. */
+  --ig: #C13584; --ig-bg: #FDF2F8; --ig-br: #F6D7E8;
+  --li: #0A66C2; --li-bg: #EFF6FC; --li-br: #CFE3F5;
+
   --n100: var(--k100); --n200: var(--k200); --n300: var(--k300); --n400: var(--k400);
 
   --shadow: 0 10px 26px -10px rgba(35, 31, 32, .30), 0 2px 6px -2px rgba(35, 31, 32, .16);
@@ -73,6 +79,9 @@
 
   --red: var(--r300); --red-bg: #2B1416; --red-br: #4A2126;
   --amber: var(--a300); --amber-bg: #2A1F0B; --amber-br: #463317;
+
+  --ig: #F291C4; --ig-bg: #2B1322; --ig-br: #4A2039;
+  --li: #6FB4F2; --li-bg: #0E1E2E; --li-br: #1D3A55;
 
   --n100: #232629; --n200: #2E3235; --n300: #3F444A; --n400: #5B616B;
 
