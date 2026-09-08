@@ -114,6 +114,16 @@ export interface Usage {
 export interface Post {
   id: string;
   goalId: string;
+  /**
+   * The generation run that produced this post, when one did.
+   *
+   * A post is written per platform: one run targeting Instagram and LinkedIn
+   * produces two rows, each with its own caption and its own media, and this
+   * id is the only thing that pairs them. The detail view needs the pair to
+   * show what each platform is actually getting, so the id has to survive the
+   * trip to the client. Null for a post composed by hand.
+   */
+  generationRunId: string | null;
   platforms: Platform[];
   slides: Slide[];
   caption: string;
