@@ -57,6 +57,11 @@ type ApiPostMedia = {
 type ApiPost = {
   id: string;
   goalId: string | null;
+  /**
+   * Already present in the list payload: `GET /api/posts` selects rows with
+   * Prisma `include`, so every column ships. It was simply dropped here.
+   */
+  generationRunId?: string | null;
   caption: string | null;
   status: string;
   scheduledAt: string | null;
@@ -98,6 +103,7 @@ export function toRedsPost(p: ApiPost): Post {
   return {
     id: p.id,
     goalId: p.goalId ?? "",
+    generationRunId: p.generationRunId ?? null,
     platforms: (p.intendedPlatforms ?? []).map((x) => x.toLowerCase() as Platform),
     slides,
     caption,
