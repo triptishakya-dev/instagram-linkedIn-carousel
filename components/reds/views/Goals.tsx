@@ -9,7 +9,7 @@ import {
   type DeleteGoalResult,
 } from "@/lib/api-client";
 import { PILL } from "@/lib/reds/data";
-import { MONO, absDT, inr, relDT } from "@/lib/reds/format";
+import { MONO, absDT, inr, inrCost, num, relDT } from "@/lib/reds/format";
 import { EmptyState } from "../charts";
 import { useReds } from "../store";
 import type { Goal } from "@/lib/reds/types";
@@ -40,6 +40,7 @@ const HEADERS: { label: string; align: "left" | "right" }[] = [
   { label: "Cadence", align: "left" },
   { label: "Window", align: "left" },
   { label: "Posts", align: "right" },
+  { label: "Tokens", align: "right" },
   { label: "Est. spend to date", align: "right" },
   { label: "Status", align: "left" },
   { label: "Last run", align: "left" },
@@ -54,6 +55,14 @@ export function Goals() {
 
 function GoalsInner({ now }: { now: number }) {
   const s = useReds();
+
+  /**
+   * Per-goal usage out of the shared report -- a lookup, not another fetch.
+   * `byGoal` is already bucketed by the aggregation layer, so every goal's
+   * figures come from the same pass as the dashboard's and the footer's.
+   */
+  const usageForGoal = (goalId: string) =>
+    s.usage?.allTime.byGoal.find((b) => b.key === goalId) ?? null;
 
   useEffect(() => {
     fetch("/api/goals")
@@ -298,8 +307,25 @@ function GoalsInner({ now }: { now: number }) {
                     {absDT(g.startDate).split(",")[0]} – {g.endDate ? absDT(g.endDate).split(",")[0] : "until paused"}
                   </td>
                   <td style={{ padding: 10, textAlign: "right", fontFamily: MONO, fontSize: 12 }}>{list.length}</td>
+                  {/*
+                    Tokens and spend come from the usage ledger, keyed by goal.
+                    Summing the posts' own columns counted caption calls only,
+                    so a goal's image spend never appeared in this table.
+                  */}
                   <td style={{ padding: 10, textAlign: "right", fontFamily: MONO, fontSize: 12, whiteSpace: "nowrap" }}>
-                    <span style={{ color: "var(--fg3)" }}>est.</span> {inr(list.reduce((a, p) => a + p.usage.estimatedCostInr, 0))}
+                    {num(usageForGoal(g.id)?.tokens ?? 0)}
+                  </td>
+                  <td style={{ padding: 10, textAlign: "right", fontFamily: MONO, fontSize: 12, whiteSpace: "nowrap" }}>
+                    {(() => {
+                      const c = usageForGoal(g.id)?.costInr;
+                      return c == null ? (
+                        <span style={{ color: "var(--fg3)" }}>not priced</span>
+                      ) : (
+                        <>
+                          <span style={{ color: "var(--fg3)" }}>est.</span> {inrCost(c)}
+                        </>
+                      );
+                    })()}
                   </td>
                   <td style={{ padding: 10 }}>
                     <span style={{ display: "inline-block", fontSize: 11, padding: "2px 8px", borderRadius: 999, background: pill.bg, color: pill.fg, border: `1px solid ${pill.br}` }}>
