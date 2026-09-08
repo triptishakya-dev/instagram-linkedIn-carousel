@@ -26,6 +26,7 @@ export const NAV = [
   { k: "accounts", label: "Accounts", href: "/accounts", d: "M12 8a3 3 0 100 6 3 3 0 000-6M5 20c1.6-3.4 4-5 7-5s5.4 1.6 7 5" },
   { k: "usage", label: "Usage", href: "/usage", d: "M4 19l5-6 4 3 7-9" },
   { k: "settings", label: "Settings", href: "/settings", d: "M12 9a3 3 0 100 6 3 3 0 000-6M12 3v3M12 18v3M4 12h3M17 12h3" },
+  { k: "logs", label: "Logs", href: "/logs", d: "M5 4h9l5 5v11H5zM14 4v5h5M8 13h8M8 17h5" },
 ];
 
 /** Placeholder swatches for assets that have no rendered thumbnail yet. */
