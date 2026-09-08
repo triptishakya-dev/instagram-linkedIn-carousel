@@ -1,13 +1,40 @@
 import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { readJson, toErrorResponse } from "@/lib/http";
+import { canEncryptSecrets, encryptSecret } from "@/lib/crypto";
+import { ApiError, readJson, toErrorResponse } from "@/lib/http";
 import { createModelSchema } from "@/lib/validation/model";
+
+/**
+ * Every column except the encrypted key.
+ *
+ * `apiKeyCipher` is not secret in the sense that reading it reveals the key,
+ * but shipping it to the browser puts a ciphertext in front of anyone who can
+ * open devtools, for no reason: nothing in the UI can use it. `keyLast4` is
+ * what the card shows.
+ */
+const PUBLIC_FIELDS = {
+  id: true,
+  userId: true,
+  label: true,
+  provider: true,
+  role: true,
+  inputPricePerMTokInr: true,
+  outputPricePerMTokInr: true,
+  maxTokens: true,
+  temperature: true,
+  enabled: true,
+  keyLast4: true,
+  apiModelId: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
 
 const DEFAULT_MODELS = [
   {
     label: "Claude 3.5 Sonnet",
     provider: "Anthropic",
+    apiModelId: "claude-sonnet-4-5",
     role: "BOTH" as const,
     inputPricePerMTokInr: 268,
     outputPricePerMTokInr: 1340,
@@ -18,6 +45,7 @@ const DEFAULT_MODELS = [
   {
     label: "Claude 3.5 Haiku",
     provider: "Anthropic",
+    apiModelId: "claude-haiku-4-5",
     role: "CAPTION" as const,
     inputPricePerMTokInr: 67,
     outputPricePerMTokInr: 335,
@@ -28,6 +56,7 @@ const DEFAULT_MODELS = [
   {
     label: "GPT-4o",
     provider: "OpenAI",
+    apiModelId: "gpt-4o",
     role: "BOTH" as const,
     inputPricePerMTokInr: 224,
     outputPricePerMTokInr: 896,
@@ -81,6 +110,7 @@ export async function GET() {
     const models = await prisma.aiModel.findMany({
       where: { userId },
       orderBy: { createdAt: "asc" },
+      select: PUBLIC_FIELDS,
     });
 
     return NextResponse.json({ models });
@@ -97,13 +127,30 @@ export async function POST(req: Request) {
   try {
     const userId = await getCurrentUserId();
     const body = createModelSchema.parse(await readJson(req));
-    const keyLast4 = body.key ? body.key.trim().slice(-4) : null;
+
+    // The key the user typed is stored encrypted and sent with the call for
+    // this model; only its last four characters stay readable, which is what
+    // the card shows back so a key can be recognised without being exposed.
+    // Refused rather than dropped. Discarding a key the user typed is what
+    // made the field decorative before; a 503 says the deployment cannot keep
+    // secrets yet, which is the operator's problem and not silent data loss.
+    if (body.key?.trim() && !canEncryptSecrets()) {
+      throw new ApiError(
+        503,
+        "INTERNAL",
+        "This deployment cannot store a provider key: TOKEN_ENCRYPTION_KEY is not set.",
+      );
+    }
+
+    const key = body.key?.trim() || null;
+    const keyLast4 = key ? key.slice(-4) : null;
 
     const model = await prisma.aiModel.create({
       data: {
         userId,
         label: body.label,
         provider: body.provider,
+        apiModelId: body.apiModelId ? body.apiModelId.trim() : null,
         role: body.role,
         inputPricePerMTokInr: body.inputPricePerMTokInr,
         outputPricePerMTokInr: body.outputPricePerMTokInr,
@@ -111,7 +158,9 @@ export async function POST(req: Request) {
         temperature: body.temperature,
         enabled: body.enabled,
         keyLast4,
+        apiKeyCipher: key ? encryptSecret(key) : null,
       },
+      select: PUBLIC_FIELDS,
     });
 
     return NextResponse.json(model, { status: 201 });
