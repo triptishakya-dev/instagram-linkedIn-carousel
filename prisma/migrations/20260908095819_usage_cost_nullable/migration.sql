@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "UsageEvent" ALTER COLUMN "costInr" DROP NOT NULL,
+ALTER COLUMN "costInr" DROP DEFAULT;
