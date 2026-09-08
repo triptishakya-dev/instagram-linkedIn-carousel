@@ -132,7 +132,11 @@ export async function DELETE(_req: Request, { params }: Context) {
 
     const post = await prisma.post.findFirst({
       where: { id, userId },
-      select: { id: true, status: true, media: { select: { publicId: true } } },
+      select: {
+        id: true,
+        status: true,
+        media: { select: { storageKey: true, publicId: true } },
+      },
     });
 
     if (!post) throw new ApiError(404, "NOT_FOUND", "Post not found.");
@@ -141,7 +145,17 @@ export async function DELETE(_req: Request, { params }: Context) {
       throw new ApiError(409, "CONFLICT", "This post is publishing right now.");
     }
 
-    const keys = post.media.map((m) => m.publicId).filter((k): k is string => Boolean(k));
+    // A generated slide records its object key on `storageKey`; one composed
+    // by hand carries it on `publicId`. Reading only `publicId` left every
+    // image the generation pipeline rendered orphaned in the bucket, since
+    // that column is null on those rows.
+    const keys = [
+      ...new Set(
+        post.media
+          .flatMap((m) => [m.storageKey, m.publicId])
+          .filter((k): k is string => Boolean(k)),
+      ),
+    ];
 
     // Rows first: a failed object delete leaves storage to the lifecycle rule,
     // whereas a failed row delete would leave a post whose images are gone.
