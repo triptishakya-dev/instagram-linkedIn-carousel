@@ -12,6 +12,7 @@
 
 import { proxyActivities, workflowInfo } from "@temporalio/workflow";
 import type * as activities from "../activities/generation";
+import { describeFailure } from "./failure-message";
 
 const {
   markRunRunningActivity,
@@ -103,12 +104,15 @@ export async function generatePostWorkflow(
         negativePrompt: slide.negativePrompt,
         aspectRatio: plan.aspectRatio,
         imageModel: plan.imageModel,
+        // The id, not the key: the activity decrypts the row's own key itself,
+        // so nothing secret is written to workflow history.
+        imageModelRowId: plan.imageModelRowId,
       });
     } catch (err) {
       // One refused or failed slide must not cost the whole post: the others
       // are already in storage and the draft is still usable.
       slidesFailed += 1;
-      notes.push(`Slide ${slide.order + 1} failed: ${describe(err)}`);
+      notes.push(`Slide ${slide.order + 1} failed: ${describeFailure(err)}`);
     }
   }
 
@@ -124,14 +128,19 @@ export async function generatePostWorkflow(
       topic: plan.topic,
       platform: params.platform,
       textModel: plan.textModel,
+      // The id, not the key: the activity reads and decrypts the row's own
+      // provider key itself, so no secret is written to workflow history.
+      textModelRowId: plan.textModelRowId,
       rates: plan.rates,
+      maxTokens: plan.maxTokens,
+      temperature: plan.temperature,
     });
     caption = written.caption;
     inputTokens = written.inputTokens;
     outputTokens = written.outputTokens;
     estimatedCostInr = written.estimatedCostInr;
   } catch (err) {
-    notes.push(`Caption failed: ${describe(err)}`);
+    notes.push(`Caption failed: ${describeFailure(err)}`);
   }
 
   const { mediaCount } = await finalisePostActivity({
@@ -193,7 +202,7 @@ export async function generateForGoalWorkflow(params: GenerateForGoalParams) {
         results.push(result);
         notes.push(...result.notes);
       } catch (err) {
-        notes.push(`${platform} failed: ${describe(err)}`);
+        notes.push(`${platform} failed: ${describeFailure(err)}`);
       }
     }
 
@@ -222,16 +231,8 @@ export async function generateForGoalWorkflow(params: GenerateForGoalParams) {
       runId: params.runId,
       status: "FAILED",
       postCount: results.length,
-      note: [...notes, describe(err)].join("\n"),
+      note: [...notes, describeFailure(err)].join("\n"),
     });
     throw err;
   }
-}
-
-/** Message text from anything thrown, without assuming it is an Error. */
-function describe(err: unknown): string {
-  if (err && typeof err === "object" && "message" in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }
