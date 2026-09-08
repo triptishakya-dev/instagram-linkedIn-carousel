@@ -17,10 +17,11 @@
  */
 
 import { prisma } from "@/lib/db";
-import { DEFAULT_IMAGE_MODEL, generateImage } from "@/lib/generation/gemini-image";
+import { renderImage } from "@/lib/generation/render-image";
 import { aspectRatioOf, extensionForImageMime, imageSize } from "@/lib/generation/image-size";
-import { chatCompletion, estimateCostInr, listProxyModels } from "@/lib/generation/litellm";
-import { pickTextModel, type ModelRow } from "@/lib/generation/pick-model";
+import { canEncryptSecrets, decryptSecret } from "@/lib/crypto";
+import { GenerationError, chatCompletion, estimateCostInr } from "@/lib/generation/litellm";
+import { pickImageModel, pickTextModel, type ModelRow } from "@/lib/generation/pick-model";
 import {
   resolveGeneration,
   type GoalConfig,
@@ -56,7 +57,12 @@ export type GenerationPlan = {
   textModel: string;
   textModelRowId: string | null;
   rates: { inputPricePerMTokInr: number; outputPricePerMTokInr: number };
+  /** From the model row, so a value typed in Accounts is the one sent. */
+  maxTokens: number | null;
+  temperature: number | null;
   imageModel: string;
+  /** The `AiModel` row behind `imageModel`, whose stored key renders the slides. */
+  imageModelRowId: string | null;
   /** Set when the model the goal asked for could not be used. */
   fallbackReason: string | null;
 };
@@ -137,40 +143,42 @@ export async function planGenerationActivity(input: {
 
   /* ---- which model answers ---- */
 
-  const modelIds = [goal.modelId, settings.defCaptionModel].filter(
-    (v): v is string => typeof v === "string" && v.length > 0,
-  );
-  const rows = modelIds.length
-    ? await prisma.aiModel.findMany({ where: { id: { in: modelIds }, userId: input.userId } })
-    : [];
+  // Every row, not just the ones the ids point at. `defCaptionModel` and
+  // `defSlideModel` live in an opaque settings blob that adding a model does
+  // not write, so fetching only the referenced ids meant a workspace with a
+  // perfectly good model configured looked, from here, like a workspace with
+  // none. The picker needs the candidates to fall back on. One small
+  // per-user table, so this is a cheaper query than the two it replaces.
+  const rows = await prisma.aiModel.findMany({ where: { userId: input.userId } });
 
-  const asRow = (id: string | null | undefined): ModelRow | null => {
-    const found = rows.find((r) => r.id === id);
-    return found
-      ? {
-          id: found.id,
-          label: found.label,
-          apiModelId: found.apiModelId,
-          enabled: found.enabled,
-          inputPricePerMTokInr: found.inputPricePerMTokInr,
-          outputPricePerMTokInr: found.outputPricePerMTokInr,
-        }
-      : null;
-  };
+  const toRow = (found: (typeof rows)[number]): ModelRow => ({
+    id: found.id,
+    label: found.label,
+    apiModelId: found.apiModelId,
+    enabled: found.enabled,
+    inputPricePerMTokInr: found.inputPricePerMTokInr,
+    outputPricePerMTokInr: found.outputPricePerMTokInr,
+    role: found.role,
+    maxTokens: found.maxTokens,
+    temperature: found.temperature,
+  });
 
-  // A proxy that cannot be listed is treated as "cannot check" rather than
-  // "serves nothing"; see `pickTextModel`.
-  let servable: string[] = [];
-  try {
-    servable = await listProxyModels();
-  } catch {
-    servable = [];
-  }
+  const available = rows.map(toRow);
+  const asRow = (id: string | null | undefined): ModelRow | null =>
+    (id ? available.find((r) => r.id === id) : undefined) ?? null;
 
+  // Both throw rather than substituting a built-in model, so a workspace that
+  // has configured nothing usable fails here with the reason instead of
+  // spending on a provider nobody chose.
   const choice = pickTextModel({
     goalModel: asRow(goal.modelId),
     workspaceModel: asRow(typeof settings.defCaptionModel === "string" ? settings.defCaptionModel : null),
-    servable,
+    available,
+  });
+
+  const imageChoice = pickImageModel({
+    workspaceModel: asRow(typeof settings.defSlideModel === "string" ? settings.defSlideModel : null),
+    available,
   });
 
   /* ---- the prompts themselves ---- */
@@ -190,8 +198,13 @@ export async function planGenerationActivity(input: {
     textModel: choice.apiModelId,
     textModelRowId: choice.modelRowId,
     rates: choice.rates,
-    imageModel: DEFAULT_IMAGE_MODEL,
-    fallbackReason: choice.fallbackReason,
+    maxTokens: choice.maxTokens ?? null,
+    temperature: choice.temperature ?? null,
+    imageModel: imageChoice.apiModelId,
+    imageModelRowId: imageChoice.modelRowId,
+    fallbackReason: [choice.fallbackReason, imageChoice.fallbackReason]
+      .filter(Boolean)
+      .join(" ") || null,
   };
 }
 
@@ -269,7 +282,9 @@ export async function createPostActivity(input: {
   topic: string;
   dateKey: string;
 }): Promise<{ postId: string; replayed: boolean }> {
-  const idempotencyKey = `gen:${input.goalId}:${input.dateKey}:${input.platform}`;
+  const idempotencyKey = input.runId
+    ? `gen:${input.goalId}:${input.runId}:${input.platform}`
+    : `gen:${input.goalId}:${input.dateKey}:${input.platform}`;
 
   const existing = await prisma.post.findUnique({
     where: { idempotencyKey },
@@ -320,12 +335,17 @@ export async function renderSlideActivity(input: {
   negativePrompt: string;
   aspectRatio: string;
   imageModel: string;
+  /** The `AiModel` row behind `imageModel`, whose stored key is used if it has one. */
+  imageModelRowId?: string | null;
 }): Promise<RenderedSlide> {
-  const image = await generateImage({
+  const apiKey = await modelApiKey(input.imageModelRowId);
+
+  const image = await renderImage({
     prompt: input.prompt,
     negativePrompt: input.negativePrompt,
     aspectRatio: input.aspectRatio as never,
     model: input.imageModel,
+    apiKey,
   });
 
   const extension = extensionForImageMime(image.mime);
@@ -376,13 +396,68 @@ const CAPTION_SYSTEM = [
   "Return only the caption text, ready to post. No preamble, no explanation, no markdown headings.",
 ].join(" ");
 
+/**
+ * Reads the model row's own provider key, decrypted, or undefined when it has
+ * none.
+ *
+ * Looked up inside the activity rather than carried in the plan on purpose:
+ * everything a workflow passes between activities is written to Temporal's
+ * event history, and a plaintext provider key there would outlive the run and
+ * be readable from the Temporal UI. The row id travels; the secret does not.
+ *
+ * A stored key that will not decrypt — written under a since-rotated
+ * `TOKEN_ENCRYPTION_KEY`, or truncated — is treated as absent, so the call
+ * falls back to the proxy's own key instead of failing the whole caption.
+ */
+async function modelApiKey(modelRowId: string | null | undefined): Promise<string> {
+  if (!modelRowId) {
+    throw new GenerationError("No model row to read a key from.");
+  }
+
+  if (!canEncryptSecrets()) {
+    throw new GenerationError(
+      "TOKEN_ENCRYPTION_KEY is not set, so the stored key for this model cannot be read.",
+    );
+  }
+
+  const row = await prisma.aiModel.findUnique({
+    where: { id: modelRowId },
+    select: { label: true, apiKeyCipher: true },
+  });
+
+  if (!row) throw new GenerationError("The model this run was configured with no longer exists.");
+
+  // Not falling back to a deployment-wide key: the key that pays for a call
+  // belongs to the model row that named it, so a row with no key is a
+  // configuration gap to report rather than someone else's bill to run up.
+  if (!row.apiKeyCipher) {
+    throw new GenerationError(
+      `No API key is stored for "${row.label}". Paste one on that model in Accounts.`,
+    );
+  }
+
+  try {
+    return decryptSecret(row.apiKeyCipher);
+  } catch (err) {
+    throw new GenerationError(
+      `The stored key for "${row.label}" could not be decrypted, which happens when ` +
+        `TOKEN_ENCRYPTION_KEY has changed since it was saved. Paste the key again. ` +
+        `(${(err as Error).message})`,
+    );
+  }
+}
+
 export async function generateCaptionActivity(input: {
   postId: string;
   captionSeed: string;
   topic: string;
   platform: Platform;
   textModel: string;
+  /** The `AiModel` row behind `textModel`, whose stored key is used if it has one. */
+  textModelRowId?: string | null;
   rates: { inputPricePerMTokInr: number; outputPricePerMTokInr: number };
+  maxTokens?: number | null;
+  temperature?: number | null;
   recentTopics?: string[];
 }): Promise<{
   caption: string;
@@ -412,13 +487,20 @@ export async function generateCaptionActivity(input: {
     );
   }
 
+  const apiKey = await modelApiKey(input.textModelRowId);
+
   const result = await chatCompletion({
     model: input.textModel,
     system: CAPTION_SYSTEM,
     user: parts.join("\n"),
-    // Generous: a brief asking for 120 words plus 12 hashtags, from a model
-    // that may spend tokens reasoning before it writes anything.
-    maxTokens: 2048,
+    // The row's own ceiling, not a number chosen here: a value typed in
+    // Accounts that the pipeline overrode was worse than no field at all. The
+    // 2048 stands in only for a row saved before the column existed.
+    maxTokens: input.maxTokens ?? 2048,
+    ...(input.temperature !== null && input.temperature !== undefined
+      ? { temperature: input.temperature }
+      : {}),
+    apiKey,
   });
 
   return {
