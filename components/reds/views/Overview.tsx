@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { PILL, STATES } from "@/lib/reds/data";
-import { DAY, DOW, MON, MONO, absDT, inr, iso, num, relDT, sameDay } from "@/lib/reds/format";
+import { DAY, DOW, MON, MONO, absDT, inr, inrCost, iso, num, relDT, sameDay } from "@/lib/reds/format";
 import { Chart, EmptyState, Figures, Pill, SectionHead, type ChartSpec } from "../charts";
 import { useReds } from "../store";
 
@@ -69,16 +69,47 @@ function OverviewInner({ now }: { now: number }) {
   }, [s.posts, now]);
 
   const nowDate = new Date(now);
-  const monthPosts = s.posts.filter(
-    (p) => p.scheduledFor && new Date(p.scheduledFor).getMonth() === nowDate.getMonth(),
-  );
+  /**
+   * Two month-lists, because these four figures answer two questions.
+   *
+   * "Published" and "scheduled" are about the publishing calendar, so they
+   * belong to `scheduledFor`. Tokens and spend are about generation, so they
+   * belong to `usageAt` -- and reading them off the scheduled list reported
+   * zero, since a generated post is an unscheduled draft.
+   */
+  const sameMonth = (d: Date) =>
+    d.getMonth() === nowDate.getMonth() && d.getFullYear() === nowDate.getFullYear();
+
+  const scheduledThisMonth = s.posts.filter((p) => p.scheduledFor && sameMonth(new Date(p.scheduledFor)));
+
+  // Consumption comes from the shared usage report, not from summing posts:
+  // the ledger counts image calls and failed calls, which the post columns
+  // never did. Publishing counts above still come from the posts themselves.
+  const period = s.usage?.period.totals;
+  const allTime = s.usage?.allTime.totals;
 
   const figures = [
-    { value: String(monthPosts.filter((p) => p.state === "published").length), label: "posts published" },
-    { value: String(monthPosts.filter((p) => p.state === "scheduled").length), label: "posts scheduled" },
-    { value: num(monthPosts.reduce((a, p) => a + p.usage.inputTokens + p.usage.outputTokens, 0)), label: "tokens used" },
-    { value: inr(monthPosts.reduce((a, p) => a + p.usage.estimatedCostInr, 0)), label: "est. spend" },
+    { value: String(scheduledThisMonth.filter((p) => p.state === "published").length), label: "posts published" },
+    { value: String(scheduledThisMonth.filter((p) => p.state === "scheduled").length), label: "posts scheduled" },
+    { value: num(period?.tokens ?? 0), label: "tokens used" },
+    // "not priced" rather than ₹0 when nothing in the month carries a price.
+    { value: period?.costInr == null ? "not priced" : inrCost(period.costInr), label: "est. spend" },
   ];
+
+  /**
+   * All-time beside the month, never mixed with it.
+   *
+   * Shown as its own row so "this month" and "all time" are never mistaken for
+   * each other -- the same ledger and the same aggregation, two windows.
+   */
+  const allTimeFigures = allTime
+    ? [
+        { value: num(allTime.tokens), label: "tokens all time" },
+        { value: allTime.costInr == null ? "not priced" : inrCost(allTime.costInr), label: "spend all time" },
+        { value: String(allTime.calls), label: allTime.calls === 1 ? "AI call" : "AI calls" },
+        { value: String(allTime.failed), label: "failed calls" },
+      ]
+    : [];
 
   const charts = useChartSpecs(now);
   const hasPosts = s.posts.length > 0;
@@ -189,6 +220,14 @@ function OverviewInner({ now }: { now: number }) {
         {hasPosts ? (
           <>
             <Figures figures={figures} />
+            {allTimeFigures.length ? (
+              <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+                <span style={{ display: "block", fontSize: 12, color: "var(--fg2)", marginBottom: 10 }}>
+                  All time
+                </span>
+                <Figures figures={allTimeFigures} />
+              </div>
+            ) : null}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 1, marginTop: 28, background: "var(--border)", border: "1px solid var(--border)" }}>
               {charts.map((c) => (
                 <Chart key={c.title} c={c} />
@@ -208,18 +247,24 @@ function OverviewInner({ now }: { now: number }) {
 
 /** The four overview charts, computed exactly as the brief specifies. */
 function useChartSpecs(now: number): ChartSpec[] {
-  const { posts, goals, postsForGoal } = useReds();
+  const { posts, goals, postsForGoal, usage } = useReds();
 
   return useMemo(() => {
+    /*
+      Burn comes from the ledger's own day buckets, not from summing posts.
+      Summing posts counts caption tokens only -- the columns on `Post` never
+      recorded an image call -- so this chart disagreed with the figures above
+      it by the entire image spend.
+    */
+    const byDay = new Map(usage?.allTime.byDay.map((b) => [b.day, b]) ?? []);
+    const dayKey = (d: Date) =>
+      `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+
     const daily: { d: Date; t: number; c: number }[] = [];
     for (let i = 0; i < 30; i++) {
       const d = new Date(now - (29 - i) * DAY);
-      const l = posts.filter((p) => p.scheduledFor && sameDay(new Date(p.scheduledFor), d));
-      daily.push({
-        d,
-        t: l.reduce((a, p) => a + p.usage.inputTokens + p.usage.outputTokens, 0),
-        c: l.reduce((a, p) => a + p.usage.estimatedCostInr, 0),
-      });
+      const b = byDay.get(dayKey(d));
+      daily.push({ d, t: b?.tokens ?? 0, c: b?.costInr ?? 0 });
     }
     const peak = Math.max(1, ...daily.map((x) => x.t));
     const totalTok = daily.reduce((a, x) => a + x.t, 0);
@@ -246,6 +291,7 @@ function useChartSpecs(now: number): ChartSpec[] {
     for (let i = 7; i >= 0; i--) {
       const from = new Date(now - (i * 7 + nowDate.getDay()) * DAY);
       const to = new Date(from.getTime() + 7 * DAY);
+      // Publishing cadence, not consumption -- `scheduledFor` is correct here.
       const l = posts.filter((p) => p.scheduledFor && new Date(p.scheduledFor) >= from && new Date(p.scheduledFor) < to);
       weeks.push({
         from,
@@ -327,5 +373,5 @@ function useChartSpecs(now: number): ChartSpec[] {
           " runs per post",
       },
     ];
-  }, [posts, goals, postsForGoal, now]);
+  }, [posts, goals, postsForGoal, now, usage]);
 }
