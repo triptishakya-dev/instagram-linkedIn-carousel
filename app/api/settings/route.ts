@@ -28,16 +28,38 @@ export async function GET() {
 
 /**
  * PUT /api/settings
- * Upserts the single row for this user. Partial: the Settings view saves one
- * section at a time, so omitted keys keep whatever is stored.
+ * Upserts the single row for this user.
+ *
+ * `settings` is merged into what is stored rather than replacing it, which is
+ * what "omitted keys keep whatever is stored" was always meant to mean: the
+ * column held one JSON blob, and writing it whole made the last client to save
+ * anything win over every key in it. A tab that had loaded before another set
+ * the default caption model would write its own stale empty value back over
+ * it, and a preference the user had saved would quietly revert. Clients now
+ * send only the keys they changed, and those are the only ones that move.
  */
 export async function PUT(req: Request) {
   try {
     const userId = await getCurrentUserId();
     const body = saveSettingsSchema.parse(await readJson(req));
 
-    const settings = body.settings as Prisma.InputJsonValue | undefined;
     const team = body.team as Prisma.InputJsonValue | undefined;
+
+    const stored = body.settings
+      ? (
+          await prisma.workspaceSetting.findUnique({
+            where: { userId },
+            select: { settings: true },
+          })
+        )?.settings
+      : undefined;
+
+    const settings = body.settings
+      ? ({
+          ...(stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {}),
+          ...body.settings,
+        } as Prisma.InputJsonValue)
+      : undefined;
 
     const row = await prisma.workspaceSetting.upsert({
       where: { userId },
