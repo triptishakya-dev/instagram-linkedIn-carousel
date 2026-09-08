@@ -26,6 +26,7 @@ const TITLES: Record<string, string> = {
   accounts: "Accounts",
   usage: "Usage",
   settings: "Settings",
+  logs: "Logs",
 };
 
 export function Shell({ children }: { children: ReactNode }) {
