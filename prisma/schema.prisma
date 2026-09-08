@@ -346,6 +346,14 @@ model AiModel {
   enabled               Boolean   @default(true)
   keyLast4              String?
 
+  /// The provider key for this model, encrypted at rest by `lib/crypto`.
+  ///
+  /// The proxy holds a key per provider from its own environment; this is the
+  /// per-model override, sent with the call so one workspace's row can bill to
+  /// its own account. `keyLast4` above stays plaintext because it is what the
+  /// UI shows back, and four characters identify a key without being one.
+  apiKeyCipher          String?
+
   /// The `model_name` to send to the LiteLLM proxy, e.g. "gemini-flash-latest".
   ///
   /// `label` and `provider` are for humans; neither is callable. Without this
