@@ -4,7 +4,30 @@ import { getCurrentUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { ApiError, readJson, toErrorResponse } from "@/lib/http";
 import { clearModelFromSettings } from "@/lib/model-refs";
+import { canEncryptSecrets, encryptSecret } from "@/lib/crypto";
 import { updateModelSchema } from "@/lib/validation/model";
+
+/**
+ * The columns a response may carry. `apiKeyCipher` is deliberately absent:
+ * nothing in the UI can use it, and handing it out costs something for
+ * nothing. See the same list in `app/api/models/route.ts`.
+ */
+const PUBLIC_FIELDS = {
+  id: true,
+  userId: true,
+  label: true,
+  provider: true,
+  role: true,
+  inputPricePerMTokInr: true,
+  outputPricePerMTokInr: true,
+  maxTokens: true,
+  temperature: true,
+  enabled: true,
+  keyLast4: true,
+  apiModelId: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
 
 /**
  * Resolves a model the caller owns, or throws.
@@ -27,7 +50,13 @@ export async function GET(
   try {
     const { id } = await params;
     const { model } = await ownedModel(id);
-    return NextResponse.json(model);
+
+    // Stripped rather than selected around, because `ownedModel` needs the
+    // stored key for the update path and this is the same row.
+    const pub: Record<string, unknown> = { ...model };
+    delete pub.apiKeyCipher;
+
+    return NextResponse.json(pub);
   } catch (err) {
     return toErrorResponse(err);
   }
@@ -47,15 +76,31 @@ export async function PUT(
 
     const body = updateModelSchema.parse(await readJson(req));
 
-    // A rotated key replaces the stored suffix; an absent one leaves it alone,
-    // so a PUT that only moves the temperature slider does not blank it.
-    const keyLast4 = body.key ? body.key.trim().slice(-4) : existing.keyLast4;
+    // A rotated key replaces the stored suffix and the stored key; an absent
+    // one leaves both alone, so a PUT that only moves the temperature slider
+    // does not blank them.
+    // Refused rather than dropped. Discarding a key the user typed is what
+    // made the field decorative before; a 503 says the deployment cannot keep
+    // secrets yet, which is the operator's problem and not silent data loss.
+    if (body.key?.trim() && !canEncryptSecrets()) {
+      throw new ApiError(
+        503,
+        "INTERNAL",
+        "This deployment cannot store a provider key: TOKEN_ENCRYPTION_KEY is not set.",
+      );
+    }
+
+    const key = body.key?.trim() || null;
+    const keyLast4 = key ? key.slice(-4) : existing.keyLast4;
 
     const updated = await prisma.aiModel.update({
       where: { id },
       data: {
         ...(body.label !== undefined ? { label: body.label } : {}),
         ...(body.provider !== undefined ? { provider: body.provider } : {}),
+        ...(body.apiModelId !== undefined
+          ? { apiModelId: body.apiModelId ? body.apiModelId.trim() : null }
+          : {}),
         ...(body.role !== undefined ? { role: body.role } : {}),
         ...(body.inputPricePerMTokInr !== undefined
           ? { inputPricePerMTokInr: body.inputPricePerMTokInr }
@@ -67,7 +112,9 @@ export async function PUT(
         ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
         ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
         keyLast4,
+        ...(key ? { apiKeyCipher: encryptSecret(key) } : {}),
       },
+      select: PUBLIC_FIELDS,
     });
 
     return NextResponse.json(updated);
