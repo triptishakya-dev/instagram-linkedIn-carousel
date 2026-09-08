@@ -20,58 +20,24 @@
 #      /v1/images/generations route, which targets Imagen predict.
 
 model_list:
-  # ---- Google text (captions, topic derivation) ----
-  # Alias names track Google's current release, so a retirement like the one
-  # above does not silently break generation.
-  - model_name: gemini-flash-latest
+  # The `AiModel` rows are the only list of models, and each row carries the
+  # key that pays for its calls. So there is nothing to enumerate here: a
+  # wildcard routes whatever the app asks for, inferring the provider from the
+  # model name and using the `api_key` sent with the request.
+  #
+  # The named per-provider entries that used to live here read their keys from
+  # this container's environment, which made the proxy a second and staler
+  # source of truth: a model had to be listed here *and* in the database, and
+  # whichever key the environment held was the one that got billed regardless
+  # of what the workspace had configured.
+  #
+  # One trap worth keeping from that era: Gemini image generation is not
+  # reachable through this proxy's /v1/images/generations route, which targets
+  # Imagen predict. The slide pipeline calls the Gemini `*-image` models
+  # directly for their inline bytes, and comes here only for the rest.
+  - model_name: "*"
     litellm_params:
-      model: gemini/gemini-flash-latest
-      api_key: os.environ/GEMINI_API_KEY
-
-  - model_name: gemini-pro-latest
-    litellm_params:
-      model: gemini/gemini-pro-latest
-      api_key: os.environ/GEMINI_API_KEY
-
-  - model_name: gemini-3.5-flash
-    litellm_params:
-      model: gemini/gemini-3.5-flash
-      api_key: os.environ/GEMINI_API_KEY
-
-  # ---- Google image (slide rendering) ----
-  # Listed so /v1/models advertises them and an AiModel row can name one;
-  # the image activity calls Gemini directly for the inline image bytes.
-  - model_name: gemini-3-pro-image
-    litellm_params:
-      model: gemini/gemini-3-pro-image
-      api_key: os.environ/GEMINI_API_KEY
-
-  - model_name: gemini-2.5-flash-image
-    litellm_params:
-      model: gemini/gemini-2.5-flash-image
-      api_key: os.environ/GEMINI_API_KEY
-
-  # ---- OpenAI (needs OPENAI_API_KEY) ----
-  - model_name: gpt-4o
-    litellm_params:
-      model: openai/gpt-4o
-      api_key: os.environ/OPENAI_API_KEY
-
-  - model_name: gpt-4o-mini
-    litellm_params:
-      model: openai/gpt-4o-mini
-      api_key: os.environ/OPENAI_API_KEY
-
-  # ---- Anthropic (needs ANTHROPIC_API_KEY) ----
-  - model_name: claude-sonnet-4-5
-    litellm_params:
-      model: anthropic/claude-sonnet-4-5
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  - model_name: claude-haiku-4-5
-    litellm_params:
-      model: anthropic/claude-haiku-4-5
-      api_key: os.environ/ANTHROPIC_API_KEY
+      model: "*"
 
 litellm_settings:
   set_verbose: false
