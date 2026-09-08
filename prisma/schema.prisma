@@ -75,19 +75,35 @@ enum AssetKind {
   DOCUMENT
 }
 
+/// Which half of generation a usage event paid for.
+enum UsageKind {
+  CAPTION
+  IMAGE
+}
+
+/// Whether the provider call the event records actually succeeded.
+///
+/// A failed call still belongs in the ledger: a 401 that burned nothing is
+/// worth seeing, and a call that was charged before it errored has to be paid
+/// for either way.
+enum UsageStatus {
+  OK
+  FAILED
+}
+
 // ==========================================
 // Authentication & User Models (Auth.js)
 // ==========================================
 
 model User {
-  id            String          @id @default(cuid())
+  id            String    @id @default(cuid())
   name          String?
-  email         String?         @unique
+  email         String?   @unique
   emailVerified DateTime?
   image         String?
   accounts      Account[]
   sessions      Session[]
-  
+
   socialAccounts SocialAccount[]
   posts          Post[]
   goals          Goal[]
@@ -95,9 +111,10 @@ model User {
   assets         Asset[]
   workspace      WorkspaceSetting?
   generationRuns GenerationRun[]
+  usageEvents    UsageEvent[]
 
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Account {
@@ -140,45 +157,45 @@ model VerificationToken {
 // ==========================================
 
 model SocialAccount {
-  id                    String         @id @default(cuid())
+  id                    String    @id @default(cuid())
   userId                String
   platform              Platform
-  platformUserId        String         // Provider's user/member ID (e.g. Meta User ID or LinkedIn Member URN)
-  name                  String?        // Profile display name
-  username              String?        // Profile handle / username
-  avatarUrl             String?        // Profile image URL
-  encryptedAccessToken  String         @db.Text // AES-256-GCM encrypted
-  encryptedRefreshToken String?        @db.Text
+  platformUserId        String // Provider's user/member ID (e.g. Meta User ID or LinkedIn Member URN)
+  name                  String? // Profile display name
+  username              String? // Profile handle / username
+  avatarUrl             String? // Profile image URL
+  encryptedAccessToken  String    @db.Text // AES-256-GCM encrypted
+  encryptedRefreshToken String?   @db.Text
   tokenExpiresAt        DateTime?
-  keyId                 String         // Key ID for token encryption key rotation
-  isValid               Boolean        @default(true) // Set to false on AUTH error
+  keyId                 String // Key ID for token encryption key rotation
+  isValid               Boolean   @default(true) // Set to false on AUTH error
   lastSyncAt            DateTime?
 
-  user                  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  targets               SocialTarget[]
+  user    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targets SocialTarget[]
 
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([userId, platform, platformUserId])
 }
 
 model SocialTarget {
-  id               String          @id @default(cuid())
+  id               String   @id @default(cuid())
   socialAccountId  String
   platform         Platform
-  targetType       String          // e.g. "INSTAGRAM_PROFESSIONAL", "LINKEDIN_MEMBER", "LINKEDIN_ORGANIZATION"
-  platformTargetId String          // Meta Instagram Business Account ID, LinkedIn URN, etc.
-  name             String          // Page or profile name
-  username         String?         // Instagram handle or target slug
+  targetType       String // e.g. "INSTAGRAM_PROFESSIONAL", "LINKEDIN_MEMBER", "LINKEDIN_ORGANIZATION"
+  platformTargetId String // Meta Instagram Business Account ID, LinkedIn URN, etc.
+  name             String // Page or profile name
+  username         String? // Instagram handle or target slug
   avatarUrl        String?
-  isDefault        Boolean         @default(false)
+  isDefault        Boolean  @default(false)
 
-  socialAccount    SocialAccount   @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
-  publishTargets   PublishTarget[]
+  socialAccount  SocialAccount   @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  publishTargets PublishTarget[]
 
-  createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([socialAccountId, platformTargetId])
 }
@@ -188,22 +205,22 @@ model SocialTarget {
 // ==========================================
 
 model Post {
-  id          String          @id @default(cuid())
-  userId      String
-  goalId      String?         // Reference to Goal
-  caption     String?         @db.Text
-  captionPrompt String?       @db.Text // Instructions the caption was generated from
-  status      PostStatus      @default(DRAFT)
-  scheduledAt DateTime?       // UTC scheduled time
-  timezone    String?         // User's local timezone (e.g. "Asia/Kolkata")
-  staleAfterMinutes Int       @default(30) // Skip publishing if the worker picks it up this late
-  publishedAt DateTime?       // Timestamp when all/partial publishing finished
+  id                String     @id @default(cuid())
+  userId            String
+  goalId            String? // Reference to Goal
+  caption           String?    @db.Text
+  captionPrompt     String?    @db.Text // Instructions the caption was generated from
+  status            PostStatus @default(DRAFT)
+  scheduledAt       DateTime? // UTC scheduled time
+  timezone          String? // User's local timezone (e.g. "Asia/Kolkata")
+  staleAfterMinutes Int        @default(30) // Skip publishing if the worker picks it up this late
+  publishedAt       DateTime? // Timestamp when all/partial publishing finished
 
   /// Platforms the author selected. PublishTarget rows can only exist once a
   /// SocialTarget is connected, so this records intent in the meantime.
   intendedPlatforms Platform[]
   /// Set by the client to make a retried submit return the original post.
-  idempotencyKey String?      @unique
+  idempotencyKey    String?    @unique
 
   /// The run that produced this post, and what it cost.
   ///
@@ -216,19 +233,19 @@ model Post {
   outputTokens     Int?
   estimatedCostInr Float?
   generationMs     Int?
-  runCount         Int          @default(0)
+  runCount         Int     @default(0)
   /// Today's concrete angle, derived from the goal's `imagePrompt`. Kept so a
   /// post can be traced back to the wording that produced it.
-  topic            String?      @db.Text
+  topic            String? @db.Text
 
-  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  goal        Goal?           @relation(fields: [goalId], references: [id], onDelete: SetNull)
-  generationRun GenerationRun? @relation(fields: [generationRunId], references: [id], onDelete: SetNull)
-  media       PostMedia[]
-  targets     PublishTarget[]
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal          Goal?           @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  generationRun GenerationRun?  @relation(fields: [generationRunId], references: [id], onDelete: SetNull)
+  media         PostMedia[]
+  targets       PublishTarget[]
 
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ==========================================
@@ -236,20 +253,20 @@ model Post {
 // ==========================================
 
 model Goal {
-  id                String      @id @default(cuid())
+  id                String     @id @default(cuid())
   userId            String
   name              String
   platforms         Platform[]
   brandLogoAssetId  String?
-  captionPrompt     String?     @db.Text
-  imagePrompt       String?     @db.Text
+  captionPrompt     String?    @db.Text
+  imagePrompt       String?    @db.Text
   startDate         DateTime
   endDate           DateTime?
-  schedule          Json        // Stores schedule config: { cadence, time, weekdays, monthDay }
+  schedule          Json // Stores schedule config: { cadence, time, weekdays, monthDay }
   referenceAssetIds String[]
   imageAssetIds     String[]
   modelId           String?
-  status            GoalStatus  @default(ACTIVE)
+  status            GoalStatus @default(ACTIVE)
 
   /// One of `STYLE_PRESETS` in `prompt/image-generator.ts` (e.g. "3d-render").
   ///
@@ -257,9 +274,9 @@ model Goal {
   /// owned by that module as a TS union, and Prisma enum members cannot be
   /// named `3d-render` anyway. Mirroring them here would mean two lists to keep
   /// in step; instead the zod schema validates against the module's own keys.
-  visualStyle       String?
+  visualStyle        String?
   /// Overrides the per-platform default from workspace settings.
-  slideCount        Int?
+  slideCount         Int?
   /// `headerTitle`, `subtitle`, `flowchartNodes[]`, `metricsText`,
   /// `takeawayQuote`, `timelineSteps[]` — shaped like the prompt builder's
   /// `infographicDetails`. An infographic style is only eligible when this is
@@ -267,13 +284,13 @@ model Goal {
   infographicDetails Json?
   /// The last few topics this goal produced, so the daily run can be told what
   /// to avoid. Without it, one `imagePrompt` yields the same post every day.
-  recentTopics      Json?       @default("[]")
+  recentTopics       Json?   @default("[]")
 
-  user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  posts             Post[]
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  posts Post[]
 
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ==========================================
@@ -288,28 +305,28 @@ model Goal {
 /// explain itself. `workflowId` is the handle for the same execution in the
 /// Temporal UI.
 model GenerationRun {
-  id          String             @id @default(cuid())
-  userId      String
+  id      String            @id @default(cuid())
+  userId  String
   /// Null when the run covers every due goal rather than one named goal.
-  goalId      String?
-  trigger     GenerationTrigger
-  status      RunStatus          @default(QUEUED)
+  goalId  String?
+  trigger GenerationTrigger
+  status  RunStatus         @default(QUEUED)
 
-  workflowId  String?
-  runId       String?
+  workflowId String?
+  runId      String?
 
-  startedAt   DateTime?
-  finishedAt  DateTime?
+  startedAt  DateTime?
+  finishedAt DateTime?
   /// Posts that reached the database, which is not the same as goals attempted.
-  postCount   Int                @default(0)
+  postCount  Int       @default(0)
   /// Why a FAILED or PARTIAL run ended that way, in the user's words.
-  error       String?            @db.Text
+  error      String?   @db.Text
 
-  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  posts       Post[]
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  posts Post[]
 
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId, createdAt])
 }
@@ -342,6 +359,20 @@ model AiModel {
   inputPricePerMTokInr  Float     @default(0)
   outputPricePerMTokInr Float     @default(0)
   maxTokens             Int       @default(4000)
+
+  /// Rupees per generated image, for models billed per image rather than per
+  /// token.
+  ///
+  /// Kept separate from the two per-token rates above because image models do
+  /// not bill on tokens, and folding them into the token fields produced the
+  /// figure they produced before this existed: zero. Null means the row has no
+  /// image price set, which is reported as "not priced" rather than as free.
+  ///
+  /// A single rate is an approximation -- real image pricing varies by size
+  /// and quality, and this app already varies size by aspect ratio. Each
+  /// `UsageEvent` therefore records the width, height and quality it was
+  /// charged at, so a richer pricing model can reprice history later.
+  imagePriceInr         Float?
   temperature           Float     @default(0.7)
   enabled               Boolean   @default(true)
   keyLast4              String?
@@ -352,19 +383,19 @@ model AiModel {
   /// per-model override, sent with the call so one workspace's row can bill to
   /// its own account. `keyLast4` above stays plaintext because it is what the
   /// UI shows back, and four characters identify a key without being one.
-  apiKeyCipher          String?
+  apiKeyCipher String?
 
   /// The `model_name` to send to the LiteLLM proxy, e.g. "gemini-flash-latest".
   ///
   /// `label` and `provider` are for humans; neither is callable. Without this
   /// there is no way to turn a row the user configured in Accounts into a
   /// request, which is why generation used hardcoded model ids before.
-  apiModelId            String?
+  apiModelId String?
 
-  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ==========================================
@@ -388,10 +419,10 @@ model Asset {
   storageKey String    @unique
   uploadedBy String?
 
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId, createdAt])
 }
@@ -404,10 +435,10 @@ model Asset {
 /// driven entirely by the client form, so it is stored as JSON rather than
 /// mirrored into columns that would need a migration per new toggle.
 model WorkspaceSetting {
-  userId    String   @id
+  userId    String @id
   settings  Json
-  team      Json     @default("[]")
-  budgetCap Int      @default(4200000)
+  team      Json   @default("[]")
+  budgetCap Int    @default(4200000)
 
   /// Stamped the first time `GET /api/models` seeds the default model list.
   ///
@@ -416,41 +447,41 @@ model WorkspaceSetting {
   /// the next read.
   modelsSeededAt DateTime?
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
 model PostMedia {
-  id            String   @id @default(cuid())
+  id            String  @id @default(cuid())
   postId        String
-  order         Int      // Sequence index (0, 1, 2...) for carousel / multi-image order
-  url           String   // Public URL hosted on Cloudinary / S3
-  publicId      String?  // Storage asset provider ID
+  order         Int // Sequence index (0, 1, 2...) for carousel / multi-image order
+  url           String // Public URL hosted on Cloudinary / S3
+  publicId      String? // Storage asset provider ID
   width         Int?
   height        Int?
-  aspectRatio   Float?   // Aspect ratio float (width / height)
-  format        String?  // Image format (e.g., "jpg", "png")
+  aspectRatio   Float? // Aspect ratio float (width / height)
+  format        String? // Image format (e.g., "jpg", "png")
   fileSizeBytes Int?
 
   /// S3 object key behind `url`. Nullable only because rows written before
   /// storage was real have no key to record.
-  storageKey    String?
+  storageKey     String?
   /// The prompt this image was actually generated from, and what it refused.
   ///
   /// This is the audit trail that makes "generation is driven by the goal"
   /// checkable rather than a claim: every image can be read back to the
   /// wording that produced it.
-  prompt          String? @db.Text
-  negativePrompt  String? @db.Text
+  prompt         String? @db.Text
+  negativePrompt String? @db.Text
   /// Slide copy, when the style calls for text over the image.
-  headline        String?
-  body            String? @db.Text
+  headline       String?
+  body           String? @db.Text
 
-  post          Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
 
-  createdAt     DateTime @default(now())
+  createdAt DateTime @default(now())
 }
 
 // ==========================================
@@ -458,29 +489,29 @@ model PostMedia {
 // ==========================================
 
 model PublishTarget {
-  id                  String           @id @default(cuid())
+  id                  String        @id @default(cuid())
   postId              String
   socialTargetId      String
-  status              TargetStatus     @default(PENDING)
+  status              TargetStatus  @default(PENDING)
   failureClass        FailureClass?
-  errorMessage        String?          @db.Text
-  providerPostId      String?          // Published post ID returned by Instagram/LinkedIn API
-  providerContainerId String?          // Container / upload URN ID for state tracking
-  metadata            Json?            // Intermediate steps / state details
-  scheduledAt         DateTime         // UTC scheduled time for claim query matching
-  lockedUntil         DateTime?        // Lease expiration timestamp for concurrency protection
-  lockToken           String?          // Unique worker/cron execution token
-  retryCount          Int              @default(0)
-  maxRetries          Int              @default(3)
+  errorMessage        String?       @db.Text
+  providerPostId      String? // Published post ID returned by Instagram/LinkedIn API
+  providerContainerId String? // Container / upload URN ID for state tracking
+  metadata            Json? // Intermediate steps / state details
+  scheduledAt         DateTime // UTC scheduled time for claim query matching
+  lockedUntil         DateTime? // Lease expiration timestamp for concurrency protection
+  lockToken           String? // Unique worker/cron execution token
+  retryCount          Int           @default(0)
+  maxRetries          Int           @default(3)
   nextRetryAt         DateTime?
   publishedAt         DateTime?
 
-  post                Post             @relation(fields: [postId], references: [id], onDelete: Cascade)
-  socialTarget        SocialTarget     @relation(fields: [socialTargetId], references: [id], onDelete: Cascade)
-  attempts            PublishAttempt[]
+  post         Post             @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialTarget SocialTarget     @relation(fields: [socialTargetId], references: [id], onDelete: Cascade)
+  attempts     PublishAttempt[]
 
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([postId, socialTargetId])
   @@index([status, scheduledAt])
@@ -494,9 +525,113 @@ model PublishAttempt {
   failureClass    FailureClass?
   errorMessage    String?       @db.Text
   durationMs      Int?
-  responsePayload Json?         // Sanitized execution response log
+  responsePayload Json? // Sanitized execution response log
 
-  publishTarget   PublishTarget @relation(fields: [publishTargetId], references: [id], onDelete: Cascade)
+  publishTarget PublishTarget @relation(fields: [publishTargetId], references: [id], onDelete: Cascade)
 
-  createdAt       DateTime      @default(now())
+  createdAt DateTime @default(now())
+}
+
+/// One provider invocation, and what it cost.
+///
+/// The application's own ledger, and the source of truth for every usage
+/// figure the UI shows. Langfuse traces the same calls, but it is an
+/// observability store: dashboards read this table, never Langfuse.
+///
+/// Before this existed, consumption was three denormalised columns on `Post`,
+/// written once at the end of a run. That could not represent a failed call, a
+/// retry, or an image -- images were never costed at all -- and it attributed
+/// everything to the post rather than to the call that was actually billed.
+model UsageEvent {
+  id     String @id @default(cuid())
+  userId String
+
+  /// The one key that makes this table idempotent.
+  ///
+  /// Minted at the call site immediately before the provider fetch, so it
+  /// names one real invocation. The write is an upsert on it: a retried
+  /// *write* cannot duplicate a row, while a retried *call* mints a new id and
+  /// correctly produces a second event. One provider invocation, one row --
+  /// and two real charges stay two rows.
+  ///
+  /// Not derived from `generationRunId + attempt + kind`: a post renders its
+  /// slides as separate activity executions that each report attempt 1, so
+  /// eight images in one run would collide on such a key. `providerRequestId`
+  /// cannot break the tie either -- Gemini returns none.
+  invocationId String @unique
+
+  /// Attribution, as plain columns rather than relations.
+  ///
+  /// Deliberate, and consistent with `Post.modelId` and `Goal.modelId`, which
+  /// are already plain. A cost was incurred whether or not the post it paid
+  /// for still exists, so deleting a post must not take the accounting with
+  /// it. `userId` is the exception: it cascades, because a deleted user's
+  /// ledger has no owner left to report to.
+  goalId          String?
+  postId          String?
+  generationRunId String?
+  /// The `AiModel` row that was billed, when the call came from one.
+  modelId         String?
+
+  /// What answered, as opposed to what was configured.
+  provider   String
+  apiModelId String
+  kind       UsageKind
+
+  /// Authoritative provider usage. Null means the provider reported none --
+  /// never zero, which would read as "this call was free".
+  inputTokens       Int?
+  outputTokens      Int?
+  cachedInputTokens Int?
+
+  /// Image billing, which is not token billing.
+  ///
+  /// Width, height and quality are recorded even while pricing is a single
+  /// per-image rate, because real image pricing varies by them. Capturing them
+  /// now means a richer pricing model can reprice history instead of losing it.
+  imageCount  Int?
+  imageWidth  Int?
+  imageHeight Int?
+  quality     String?
+
+  /// Rupees for this one call, computed from the model row's own rates.
+  ///
+  /// Nullable for the same reason the token fields are: null means the cost is
+  /// not known -- an image model with no `imagePriceInr` set, say -- and zero
+  /// means the call genuinely cost nothing. Defaulting the unknown case to 0
+  /// is what let the entire image bill read as free.
+  costInr   Float?
+  latencyMs Int?
+
+  status       UsageStatus
+  errorMessage String?     @db.Text
+
+  /// The join to the trace. Null when Langfuse was unreachable, which is not
+  /// an error: tracing is best-effort and never blocks a generation.
+  langfuseTraceId      String?
+  langfuseGenerationId String?
+
+  /// Temporal's attempt number for the activity that made the call, and the
+  /// provider's own request id where one is returned. Both are attribution,
+  /// not identity -- `invocationId` is identity.
+  attempt           Int?
+  providerRequestId String?
+
+  /// Set on rows reconstructed from the old `Post` columns rather than
+  /// observed at call time. Kept visible in the UI so a backfilled total is
+  /// never mistaken for a measured one.
+  isBackfilled Boolean @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  /// The queries `/api/usage` actually runs: a period for the workspace, and
+  /// the same period narrowed to one goal, post or run. `status` is indexed
+  /// with the date because failed calls are shown as their own figure.
+  @@index([userId, createdAt])
+  @@index([goalId, createdAt])
+  @@index([postId])
+  @@index([generationRunId])
+  @@index([userId, status, createdAt])
 }
