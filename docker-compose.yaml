@@ -50,7 +50,7 @@ services:
       - "8080:8080"
 
   # One OpenAI-compatible endpoint in front of every provider, so the app calls
-  # a model by the name stored on `AiModel.apiModelId` and never holds a
+  # a model by the name stored on `AiModel.apiModelId` and never holds 
   # provider key itself. Keys live here, injected from .env.
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
