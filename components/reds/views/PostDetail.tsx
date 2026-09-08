@@ -60,6 +60,20 @@ export function PostDetail({ id }: { id: string }) {
   const pill = PILL[st.t];
   const tok = post.usage.inputTokens + post.usage.outputTokens;
 
+  // A post whose generation has not produced media yet has no slides, and the
+  // whole editor below is built around one. There is nothing to edit until the
+  // run lands, so say that instead of indexing into an empty array.
+  if (post.slides.length === 0) {
+    return (
+      <EmptyState
+        title="This post has no slides yet"
+        body="Nothing has been generated for it. Run generation from the posts table, and the slides show up here once the run finishes."
+        actionLabel="Back to posts"
+        onAction={() => s.go("/posts")}
+      />
+    );
+  }
+
   const idx = Math.min(slideIdx, post.slides.length - 1);
   const sl = post.slides[idx];
   const asset = s.assetById(sl.assetId);
@@ -466,7 +480,7 @@ export function PostDetail({ id }: { id: string }) {
                         <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg2)" }}>{v.note}</p>
                         <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
                           <span style={{ color: "var(--fg3)", textDecoration: "line-through" }}>{v.headline}</span>
-                          <span style={{ color: "var(--green-text)" }}>{post.slides[0].headline}</span>
+                          <span style={{ color: "var(--green-text)" }}>{post.slides[0]?.headline ?? ""}</span>
                         </div>
                         <button
                           type="button"
