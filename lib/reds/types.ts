@@ -171,6 +171,14 @@ export interface PickerSpec {
 }
 
 export interface NewModelDraft {
+  /**
+   * Set when the draft is editing an existing row rather than creating one.
+   *
+   * One draft type and one modal serve both: the Add flow leaves this unset
+   * and POSTs, the Edit flow fills it from the card and PUTs. A second
+   * near-identical modal would drift from this one field by field.
+   */
+  id?: string;
   label: string;
   provider: string;
   apiModelId: string;
