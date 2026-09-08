@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PILL } from "@/lib/reds/data";
-import { DAY, MONO, absDT, inr, iso, num } from "@/lib/reds/format";
+import { DAY, MONO, absDT, inr, inrCost, iso, num } from "@/lib/reds/format";
+import { usageAt } from "@/lib/reds/usage-period";
 import { chip, seg, useReds } from "../store";
 import { Figures } from "../charts";
 import type { Post } from "@/lib/reds/types";
+import type { UsageReport } from "@/lib/usage/query";
 
 const PERIODS = [
   { k: "month", label: "This month" },
@@ -16,13 +18,13 @@ const PERIODS = [
 
 interface GroupRow {
   label: string;
+  calls: number;
   inTok: number;
   outTok: number;
-  runs: number;
-  spend: number;
-  avgMs: number;
-  posts: number;
-  perPost: number;
+  tokens: number;
+  failed: number;
+  /** Null when nothing in the bucket carries a price. */
+  spend: number | null;
 }
 
 const H2: React.CSSProperties = { margin: "0 0 14px", fontSize: 20, fontWeight: 600, lineHeight: 1.35 };
@@ -41,55 +43,101 @@ function UsageInner({ now }: { now: number }) {
   const [runOpen, setRunOpen] = useState<Record<string, boolean>>({});
   const [thresholds, setThresholds] = useState<number[]>([80, 100]);
 
+  // Consumption is dated by when the run happened, not by when the post is
+  // meant to go out -- see `usageAt`. Reading `scheduledFor` here filtered out
+  // every generated post, because generation leaves drafts unscheduled.
+  /**
+   * The ledger for the selected period.
+   *
+   * `/usage` is the one surface with its own period control, so it queries the
+   * same aggregation layer with its own window rather than reusing the store's
+   * month. That is a different question being asked, not the duplicated
+   * arithmetic this refactor removed -- the totals still come from
+   * `lib/usage/aggregate.ts`, never from summing posts here.
+   */
+  const [report, setReport] = useState<UsageReport | null>(null);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    const n = new Date(now);
+
+    const from =
+      period === "month"
+        ? new Date(n.getFullYear(), n.getMonth(), 1)
+        : period === "last"
+          ? new Date(n.getFullYear(), n.getMonth() - 1, 1)
+          : new Date(now - 90 * DAY);
+    const to = period === "last" ? new Date(n.getFullYear(), n.getMonth(), 1) : null;
+
+    const qs = new URLSearchParams({ from: from.toISOString() });
+    if (to) qs.set("to", to.toISOString());
+
+    fetch(`/api/usage?${qs}`, { signal: ac.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.period) setReport(data as UsageReport);
+      })
+      .catch(() => {
+        /* figures stay blank rather than wrong */
+      });
+
+    return () => ac.abort();
+  }, [period, now]);
+
+  const led = report?.period;
+
   const inPeriod = (p: Post) => {
-    if (!p.scheduledFor) return false;
-    const d = new Date(p.scheduledFor);
+    const d = usageAt(p);
     if (period === "month") return d.getMonth() === nowDate.getMonth() && d.getFullYear() === nowDate.getFullYear();
     if (period === "last") return d.getMonth() === (nowDate.getMonth() + 11) % 12;
     return d >= new Date(now - 90 * DAY) && d <= nowDate;
   };
 
   const list = s.posts.filter(inPeriod);
-  const tokens = list.reduce((a, p) => a + p.usage.inputTokens + p.usage.outputTokens, 0);
-  const spend = list.reduce((a, p) => a + p.usage.estimatedCostInr, 0);
+  // Consumption from the ledger; generation time is still a property of the
+  // posts, which is where it is measured.
+  const tokens = led?.totals.tokens ?? 0;
+  const spend = led?.totals.costInr ?? null;
   const genMs = list.reduce((a, p) => a + p.usage.generationMs, 0);
+  const money = (v: number | null | undefined) => (v == null ? "not priced" : "est. " + inrCost(v));
 
   // ---- burn chart ----
+  // Bucketed from the ledger's own days, so the bars include image calls the
+  // post columns never carried.
   const days = period === "90" ? 90 : 30;
   const bucketDays = Math.ceil(days / 30);
+  const ledgerByDay = new Map((led?.byDay ?? []).map((b) => [b.day, b]));
   const buckets: { from: Date; t: number; c: number }[] = [];
   for (let i = 0; i < 30; i++) {
     const from = new Date(now - (30 - i) * bucketDays * DAY);
     const to = new Date(from.getTime() + bucketDays * DAY);
-    const bl = s.posts.filter((p) => p.scheduledFor && new Date(p.scheduledFor) >= from && new Date(p.scheduledFor) < to);
-    buckets.push({
-      from,
-      t: bl.reduce((a, p) => a + p.usage.inputTokens + p.usage.outputTokens, 0),
-      c: bl.reduce((a, p) => a + p.usage.estimatedCostInr, 0),
-    });
+    let t = 0;
+    let c = 0;
+    for (const [day, b] of ledgerByDay) {
+      const d = new Date(day + "T00:00:00.000Z");
+      if (d >= from && d < to) {
+        t += b.tokens;
+        c += b.costInr ?? 0;
+      }
+    }
+    buckets.push({ from, t, c });
   }
   const peakT = Math.max(1, ...buckets.map((b) => b.t));
   const peakC = Math.max(1, ...buckets.map((b) => b.c));
 
   // ---- breakdown tables ----
-  const groupRows = (keyer: (p: Post) => string, labeler: (k: string) => string): GroupRow[] => {
-    const m = new Map<string, Post[]>();
-    list.forEach((p) => {
-      const k = keyer(p);
-      if (!m.has(k)) m.set(k, []);
-      m.get(k)!.push(p);
-    });
-    return [...m.entries()].map(([k, l]) => ({
-      label: labeler(k),
-      inTok: l.reduce((a, p) => a + p.usage.inputTokens, 0),
-      outTok: l.reduce((a, p) => a + p.usage.outputTokens, 0),
-      runs: l.reduce((a, p) => a + p.usage.runs, 0),
-      spend: l.reduce((a, p) => a + p.usage.estimatedCostInr, 0),
-      avgMs: l.reduce((a, p) => a + p.usage.generationMs, 0) / l.length,
-      posts: l.length,
-      perPost: l.reduce((a, p) => a + p.usage.estimatedCostInr, 0) / l.length,
+  // Straight from the aggregation layer's buckets: no grouping arithmetic
+  // happens in this component any more.
+  const toRows = (buckets2: { label: string; calls: number; ok: number; failed: number; inputTokens: number; outputTokens: number; tokens: number; costInr: number | null }[]): GroupRow[] =>
+    buckets2.map((b) => ({
+      label: b.label,
+      calls: b.calls,
+      inTok: b.inputTokens,
+      outTok: b.outputTokens,
+      tokens: b.tokens,
+      failed: b.failed,
+      spend: b.costInr,
     }));
-  };
 
   const sortBy = (rows: GroupRow[], key: string) => {
     const cur = uSort[key] || { col: "spend", dir: "desc" as const };
@@ -106,37 +154,40 @@ function UsageInner({ now }: { now: number }) {
   const mkTable = (key: string, title: string, rows: GroupRow[], firstLabel: string) => {
     const defs: { k: keyof GroupRow; label: string; align: "left" | "right" }[] = [
       { k: "label", label: firstLabel, align: "left" },
+      { k: "calls", label: "Calls", align: "right" },
       { k: "inTok", label: "Tokens in", align: "right" },
       { k: "outTok", label: "Tokens out", align: "right" },
-      { k: "runs", label: "Runs", align: "right" },
-      { k: "posts", label: "Posts", align: "right" },
+      { k: "tokens", label: "Tokens", align: "right" },
+      { k: "failed", label: "Failed", align: "right" },
       { k: "spend", label: "Est. spend", align: "right" },
-      { k: "avgMs", label: "Avg. gen.", align: "right" },
-      { k: "perPost", label: "Est. per post", align: "right" },
     ];
     const cur = uSort[key] || { col: "spend", dir: "desc" as const };
     return { key, title, defs, cur, rows: sortBy(rows, key) };
   };
 
   const breakdowns = [
-    mkTable("byModel", "By model", groupRows((p) => p.usage.modelId, (k) => s.modelById(k)?.label ?? k), "Model"),
-    mkTable("byGoal", "By goal", groupRows((p) => p.goalId, (k) => s.goalById(k)?.name ?? k), "Goal"),
+    mkTable("byModel", "By model", toRows(led?.byModel ?? []), "Model"),
+    mkTable("byGoal", "By goal", toRows(led?.byGoal ?? []), "Goal"),
+    mkTable("byProvider", "By provider", toRows(led?.byProvider ?? []), "Provider"),
     mkTable(
-      "byPlatform",
-      "By platform",
-      groupRows(
-        (p) => p.platforms.join(" + "),
-        (k) => k.split(" + ").map((x) => (x === "instagram" ? "Instagram" : "LinkedIn")).join(" + "),
-      ),
-      "Platform",
+      "byKind",
+      "By operation",
+      toRows([
+        ...(led ? [{ label: "Caption", ...led.byKind.caption }] : []),
+        ...(led ? [{ label: "Image", ...led.byKind.image }] : []),
+      ]),
+      "Operation",
     ),
   ];
 
   // ---- budget ----
-  const used = s.posts.reduce((a, p) => a + p.usage.inputTokens + p.usage.outputTokens, 0);
+  // Same source as the shell footer and the dashboard, so the three agree.
+  const used = report?.period.totals.tokens ?? 0;
   const pct = Math.min(100, Math.round((used / s.budgetCap) * 100));
   const budgetFill = pct >= 100 ? "var(--red)" : pct >= 80 ? "var(--amber)" : "var(--green)";
-  const budgetLabel = `${num(used)} of ${num(s.budgetCap)} — est. ${inr(s.posts.reduce((a, p) => a + p.usage.estimatedCostInr, 0))}`;
+  // The cost half was still summing the posts' own columns, which is how this
+  // line came to read Rs 364 while every other figure on the page read Rs 3.
+  const budgetLabel = `${num(used)} of ${num(s.budgetCap)} — ${money(spend)}`;
 
   // ---- recent runs ----
   const runs: { p: Post; v: Post["versions"][number] }[] = [];
@@ -172,15 +223,21 @@ function UsageInner({ now }: { now: number }) {
         <Figures
           figures={[
             { value: num(tokens), label: "tokens used" },
-            { value: "est. " + inr(spend), label: "est. spend" },
+            { value: money(spend), label: "est. spend" },
+            { value: String(led?.totals.ok ?? 0), label: "successful calls" },
+            { value: String(led?.totals.failed ?? 0), label: "failed calls" },
             { value: (genMs / 60000).toFixed(1) + "m", label: "generation time" },
             { value: String(list.length), label: "posts generated" },
           ]}
         />
         <p style={{ margin: "16px 0 0", fontSize: 13, color: "var(--fg2)" }}>
-          {list.length
-            ? `Est. ${inr(spend / list.length)} and ${num(tokens / list.length)} tokens per post.`
-            : "No posts in this period."}
+          {led?.totals.calls
+            ? `${num(tokens)} tokens over ${led.totals.calls} call${led.totals.calls === 1 ? "" : "s"}` +
+              (spend == null ? " — none of it priced yet." : `, ${money(spend)} in total.`) +
+              (led.totals.unpricedCalls
+                ? ` ${led.totals.unpricedCalls} call${led.totals.unpricedCalls === 1 ? "" : "s"} not priced.`
+                : "")
+            : "No AI calls in this period."}
         </p>
       </section>
 
@@ -270,13 +327,13 @@ function UsageInner({ now }: { now: number }) {
                     {b.rows.map((r) => {
                       const cells = [
                         { v: r.label, align: "left" as const, fg: "var(--fg)", font: "inherit", size: 13 },
+                        { v: String(r.calls), align: "right" as const, fg: "var(--fg2)", font: MONO, size: 12 },
                         { v: num(r.inTok), align: "right" as const, fg: "var(--fg2)", font: MONO, size: 12 },
                         { v: num(r.outTok), align: "right" as const, fg: "var(--fg2)", font: MONO, size: 12 },
-                        { v: String(r.runs), align: "right" as const, fg: "var(--fg2)", font: MONO, size: 12 },
-                        { v: String(r.posts), align: "right" as const, fg: "var(--fg2)", font: MONO, size: 12 },
-                        { v: "est. " + inr(r.spend), align: "right" as const, fg: "var(--fg)", font: MONO, size: 12 },
-                        { v: (r.avgMs / 1000).toFixed(1) + "s", align: "right" as const, fg: "var(--fg2)", font: MONO, size: 12 },
-                        { v: "est. " + inr(r.perPost), align: "right" as const, fg: r.perPost > 900 ? "var(--amber)" : "var(--fg2)", font: MONO, size: 12 },
+                        { v: num(r.tokens), align: "right" as const, fg: "var(--fg)", font: MONO, size: 12 },
+                        // Only coloured when there are failures to notice.
+                        { v: String(r.failed), align: "right" as const, fg: r.failed ? "var(--red)" : "var(--fg3)", font: MONO, size: 12 },
+                        { v: money(r.spend), align: "right" as const, fg: "var(--fg)", font: MONO, size: 12 },
                       ];
                       return (
                         <tr key={r.label} style={{ borderBottom: "1px solid var(--border)" }}>
@@ -315,7 +372,10 @@ function UsageInner({ now }: { now: number }) {
               <div style={{ height: "100%", width: pct + "%", background: budgetFill }} />
             </div>
             <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--fg2)" }}>
-              {budgetLabel} — projected month-end est. {inr((spend / Math.max(1, nowDate.getDate())) * 30)} at the current run rate
+              {budgetLabel}
+              {spend == null
+                ? " — nothing priced yet, so no projection"
+                : ` — projected month-end est. ${inr((spend / Math.max(1, nowDate.getDate())) * 30)} at the current run rate`}
             </p>
           </div>
           <div>
