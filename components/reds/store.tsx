@@ -73,6 +73,8 @@ interface Store {
 
   /** Re-reads the library from the API — signed preview URLs expire. */
   refreshAssets: () => Promise<void>;
+  /** Re-reads posts from the API. */
+  refreshPosts: () => Promise<void>;
 
   assetById: (id: string) => Asset | undefined;
   goalById: (id: string) => Goal | undefined;
@@ -220,6 +222,20 @@ export function RedsProvider({ children }: { children: ReactNode }) {
 
   /** Gates the settings writer until the stored row has been read. */
   const settingsLoaded = useRef(false);
+
+  /**
+   * What the server is known to hold, so a save can send only what this client
+   * actually changed.
+   *
+   * Sending the whole blob on every change made the last writer win over every
+   * key in it: a tab that had loaded before another set the default caption
+   * model wrote its own stale empty value straight back over it, and the
+   * preference reverted with nothing on screen to explain it. Keys this client
+   * never touched are never sent, so it can no longer revert them.
+   */
+  const serverSettings = useRef<Record<string, unknown>>({});
+  const serverTeam = useRef<string | null>(null);
+  const serverBudget = useRef<number | null>(null);
 
   const nowRef = useRef<number | null>(null);
   const now = useSyncExternalStore(
@@ -374,9 +390,18 @@ export function RedsProvider({ children }: { children: ReactNode }) {
         if (data) {
           // A workspace that has never been saved has no row; the defaults
           // above stand rather than being overwritten with nulls.
-          if (data.settings) setSettings((cur) => ({ ...cur, ...data.settings }));
-          if (Array.isArray(data.team)) setTeam(data.team);
-          if (typeof data.budgetCap === "number") setBudgetCap(data.budgetCap);
+          if (data.settings) {
+            serverSettings.current = { ...data.settings };
+            setSettings((cur) => ({ ...cur, ...data.settings }));
+          }
+          if (Array.isArray(data.team)) {
+            serverTeam.current = JSON.stringify(data.team);
+            setTeam(data.team);
+          }
+          if (typeof data.budgetCap === "number") {
+            serverBudget.current = data.budgetCap;
+            setBudgetCap(data.budgetCap);
+          }
         }
       })
       .catch(() => {})
@@ -422,6 +447,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
               id: m.id,
               label: m.label,
               provider: m.provider,
+              apiModelId: m.apiModelId || undefined,
               role: (m.role || "BOTH").toLowerCase() as ModelRole,
               inputPricePerMTokInr: m.inputPricePerMTokInr,
               outputPricePerMTokInr: m.outputPricePerMTokInr,
@@ -442,14 +468,42 @@ export function RedsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!settingsLoaded.current) return;
 
+    const patch: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(settings)) {
+      if (JSON.stringify(value) !== JSON.stringify(serverSettings.current[key])) {
+        patch[key] = value;
+      }
+    }
+
+    const teamJson = JSON.stringify(team);
+    const teamChanged = teamJson !== serverTeam.current;
+    const budgetChanged = budgetCap !== serverBudget.current;
+
+    // Nothing this client changed. Without the check, merely opening the app
+    // wrote its whole settings blob back over whatever was stored.
+    if (Object.keys(patch).length === 0 && !teamChanged && !budgetChanged) return;
+
     const timer = setTimeout(() => {
       fetch("/api/settings", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ settings, team, budgetCap }),
-      }).catch(() => {
-        /* the next edit retries; nothing to surface for a preference */
-      });
+        body: JSON.stringify({
+          ...(Object.keys(patch).length ? { settings: patch } : {}),
+          ...(teamChanged ? { team } : {}),
+          ...(budgetChanged ? { budgetCap } : {}),
+        }),
+      })
+        .then((res) => {
+          // Only a save the server accepted may narrow what the next one
+          // sends; a failed one has to stay in the patch and retry.
+          if (!res.ok) return;
+          Object.assign(serverSettings.current, patch);
+          if (teamChanged) serverTeam.current = teamJson;
+          if (budgetChanged) serverBudget.current = budgetCap;
+        })
+        .catch(() => {
+          /* the next edit retries; nothing to surface for a preference */
+        });
     }, 600);
 
     return () => clearTimeout(timer);
@@ -458,6 +512,18 @@ export function RedsProvider({ children }: { children: ReactNode }) {
   const refreshAssets = useCallback(async () => {
     try {
       setAssets((await listAssets()).map(toRedsAsset));
+    } catch {
+      /* keep what is on screen */
+    }
+  }, []);
+
+  const refreshPosts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/posts?limit=100");
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data?.posts)) setPosts(data.posts.map(toRedsPost));
+      }
     } catch {
       /* keep what is on screen */
     }
@@ -506,7 +572,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
   const value = useMemo<Store>(
     () => ({
       goals, setGoals, posts, setPosts, assets, setAssets, models, setModels,
-      refreshAssets, assetById, goalById, modelById, patchPost, postsForGoal,
+      refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
       filterStates, setFilterStates, filterGoal, setFilterGoal,
       sort, setSort, groupBy, setGroupBy, closedGroups, setClosedGroups,
@@ -520,7 +586,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
       budgetCap, setBudgetCap, vw, now, go, filtered,
     }),
     [
-      goals, posts, assets, models, refreshAssets, assetById, goalById, modelById, patchPost, postsForGoal,
+      goals, posts, assets, models, refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
       filterStates, filterGoal, sort, groupBy, closedGroups,
       page, pageSize, cols, sel, lastSel,
