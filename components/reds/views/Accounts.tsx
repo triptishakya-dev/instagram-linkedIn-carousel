@@ -301,6 +301,36 @@ export function Accounts() {
                     </label>
                     <button
                       type="button"
+                      onClick={() =>
+                        // The same draft the Add flow uses, pre-filled. `id`
+                        // is what turns that modal into an edit: the key is
+                        // left blank because the stored one is not readable
+                        // back, and blank means "keep it".
+                        s.setNewModel({
+                          id: m.id,
+                          label: m.label,
+                          provider: m.provider,
+                          apiModelId: m.apiModelId ?? "",
+                          key: "",
+                          role: m.role,
+                          maxTokens: m.maxTokens,
+                          temperature: m.temperature,
+                          inPrice: m.inputPricePerMTokInr,
+                          outPrice: m.outputPricePerMTokInr,
+                          enabled: m.enabled,
+                        })
+                      }
+                      disabled={busy}
+                      aria-label={"Edit " + m.label}
+                      title={"Edit " + m.label}
+                      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "0 0 auto", width: 28, height: 28, padding: 0, border: "1px solid var(--border)", borderRadius: "var(--r2)", background: "var(--surface)", color: "var(--fg2)", cursor: busy ? "default" : "pointer" }}
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                        <path d="M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4z" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => askDelete(m)}
                       disabled={busy}
                       aria-label={"Delete " + m.label}
