@@ -16,6 +16,13 @@ import { listAssets } from "@/lib/api-client";
 import { EMPTY_WORKSPACE, STATES } from "@/lib/reds/data";
 import { toRedsAsset, toRedsPost } from "@/lib/reds/map";
 import { runSiblings as groupRunSiblings } from "@/lib/reds/run-siblings";
+import type { UsageReport } from "@/lib/usage/query";
+
+/** Midnight on the 1st, local time, as the start of the current usage month. */
+function monthStartIso(): string {
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), 1).toISOString();
+}
 import { iso } from "@/lib/reds/format";
 import type {
   Asset,
@@ -77,6 +84,20 @@ interface Store {
   refreshAssets: () => Promise<void>;
   /** Re-reads posts from the API. */
   refreshPosts: () => Promise<void>;
+
+  /**
+   * The canonical usage figures, fetched once and shared.
+   *
+   * Every surface that shows tokens or spend reads this: the dashboard,
+   * `/usage`, the goals table, the shell footer and the post card. They used
+   * to each sum `posts` their own way, which is how the footer came to report
+   * 1,822 tokens while the usage page reported none. One fetch, one answer.
+   *
+   * Null until the first read lands, and after a failed one -- surfaces fall
+   * back to showing nothing rather than a wrong number.
+   */
+  usage: UsageReport | null;
+  refreshUsage: () => Promise<void>;
 
   assetById: (id: string) => Asset | undefined;
   goalById: (id: string) => Goal | undefined;
@@ -193,6 +214,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
 
   const [goals, setGoals] = useState<Goal[]>(EMPTY_WORKSPACE.goals);
   const [posts, setPosts] = useState<Post[]>(EMPTY_WORKSPACE.posts);
+  const [usage, setUsage] = useState<UsageReport | null>(null);
   const [assets, setAssets] = useState<Asset[]>(EMPTY_WORKSPACE.assets);
   const [models, setModels] = useState<Model[]>(EMPTY_WORKSPACE.models);
 
@@ -395,6 +417,19 @@ export function RedsProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
 
+    // Windowed to the current month, so one response carries both figures the
+    // dashboard shows side by side: `period` is this month, `allTime` is
+    // everything. Fetching them separately risks "this month" exceeding "all
+    // time" because the two were read at different moments.
+    fetch(`/api/usage?from=${monthStartIso()}`, { signal: ac.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.period && data?.allTime) setUsage(data as UsageReport);
+      })
+      .catch(() => {
+        /* surfaces render without figures rather than with invented ones */
+      });
+
     fetch("/api/settings", { signal: ac.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -528,6 +563,17 @@ export function RedsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const refreshUsage = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/usage?from=${monthStartIso()}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.period && data?.allTime) setUsage(data as UsageReport);
+    } catch {
+      /* keep what is on screen */
+    }
+  }, []);
+
   const refreshPosts = useCallback(async () => {
     try {
       const res = await fetch("/api/posts?limit=100");
@@ -586,6 +632,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
     () => ({
       goals, setGoals, posts, setPosts, assets, setAssets, models, setModels,
       refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal, runSiblings,
+      usage, refreshUsage,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
       filterStates, setFilterStates, filterGoal, setFilterGoal,
       sort, setSort, groupBy, setGroupBy, closedGroups, setClosedGroups,
@@ -600,6 +647,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
     }),
     [
       goals, posts, assets, models, refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal, runSiblings,
+      usage, refreshUsage,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
       filterStates, filterGoal, sort, groupBy, closedGroups,
       page, pageSize, cols, sel, lastSel,
