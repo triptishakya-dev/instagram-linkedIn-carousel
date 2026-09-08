@@ -99,6 +99,10 @@ export async function generatePostWorkflow(
       await renderSlideActivity({
         userId: params.userId,
         postId,
+        // Attribution for the usage ledger: an image is billed to the run and
+        // goal that asked for it, not just to the post it lands on.
+        goalId: params.goalId,
+        generationRunId: params.runId,
         order: slide.order,
         prompt: slide.prompt,
         negativePrompt: slide.negativePrompt,
@@ -124,6 +128,9 @@ export async function generatePostWorkflow(
   try {
     const written = await generateCaptionActivity({
       postId,
+      userId: params.userId,
+      goalId: params.goalId,
+      generationRunId: params.runId,
       captionSeed: plan.captionSeed,
       topic: plan.topic,
       platform: params.platform,
