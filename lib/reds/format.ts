@@ -3,6 +3,21 @@ export const DAY = 86400000;
 const NF = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
 
 export const inr = (n: number) => "₹" + NF.format(Math.round(n));
+
+const NF2 = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * Currency for figures that can be small.
+ *
+ * `inr` rounds to whole rupees, which is right for a budget cap or a model's
+ * per-million-token rate. It is wrong for what a single call cost: at real
+ * provider prices a caption runs under a rupee, so whole-rupee rounding turned
+ * every usage figure into "₹0" or "₹3" and lost the difference between them.
+ *
+ * Paise below a hundred rupees, whole rupees above, so large totals stay
+ * readable.
+ */
+export const inrCost = (n: number) => (Math.abs(n) < 100 ? "₹" + NF2.format(n) : inr(n));
 export const num = (n: number) => NF.format(Math.round(n));
 
 export const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
