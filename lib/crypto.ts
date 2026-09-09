@@ -15,6 +15,17 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 
 /** Bumped only if the scheme changes, so old values stay readable. */
 const VERSION = "v1";
+
+/**
+ * Which key a stored secret was written under, for the columns that record it.
+ *
+ * `SocialAccount.keyId` is a required column and exists so a key rotation can
+ * tell re-encryptable rows from unreadable ones. Exported rather than left for
+ * callers to hardcode "v1": a literal in a route would silently disagree with
+ * this module the first time the scheme is bumped, which is precisely the
+ * moment the column has to be right.
+ */
+export const SECRET_KEY_ID = VERSION;
 const IV_BYTES = 12;
 
 /**
