@@ -539,6 +539,40 @@ export async function listAccounts(signal?: AbortSignal): Promise<SocialAccountR
   return (await res.json()).accounts;
 }
 
+/**
+ * Where the browser goes to authorise Instagram.
+ *
+ * A location assignment or a plain `<a href>`, never a `fetch`: Meta's consent
+ * screen is a page a person has to read and press a button on, so it needs a
+ * top-level navigation. A fetch would be refused cross-origin and could not
+ * show the screen even if it were not.
+ */
+export const CONNECT_INSTAGRAM_URL = "/api/accounts/instagram/connect";
+
+export type RefreshAccountResult = {
+  /** True when the 60-day token window actually moved. */
+  renewed: boolean;
+  tokenExpiresAt: string | null;
+  username: string | null;
+};
+
+/**
+ * Renews the access token and re-reads the profile.
+ *
+ * Instagram Login can extend a long-lived token, so this genuinely keeps a
+ * connection alive rather than only reporting on it. It is also what makes
+ * `isValid` mean anything: nothing else ever sets it to false.
+ *
+ * A renewal is refused for a token under 24 hours old, which is why `renewed`
+ * is reported separately from success — a brand-new connection is healthy and
+ * un-renewed at the same time.
+ */
+export async function refreshAccount(id: string): Promise<RefreshAccountResult> {
+  const res = await fetch(`/api/accounts/${id}/refresh`, { method: "POST" });
+  if (!res.ok) await readError(res);
+  return res.json();
+}
+
 export type DisconnectResult = { deletedId: string; draftedPostCount: number };
 
 /**
