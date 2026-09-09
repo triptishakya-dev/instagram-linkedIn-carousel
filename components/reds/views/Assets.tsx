@@ -4,7 +4,7 @@ import { useState } from "react";
 import { deleteAsset, updateAsset } from "@/lib/api-client";
 import { STATES } from "@/lib/reds/data";
 import { toRedsAsset } from "@/lib/reds/map";
-import { MONO, fmtBytes, relDT } from "@/lib/reds/format";
+import { MONO, absDTS, fmtBytes, relDT } from "@/lib/reds/format";
 import { EmptyState } from "../charts";
 import { chip, seg, useReds } from "../store";
 import { useAssetIngest } from "../overlays";
@@ -369,7 +369,7 @@ function AssetsInner({ now }: { now: number }) {
                       {a.usedInPostIds.length}
                     </button>
                   </td>
-                  <td style={{ padding: "6px 10px", color: "var(--fg2)", fontSize: 12, whiteSpace: "nowrap" }}>{relDT(a.uploadedAt, now)}</td>
+                  <td title={relDT(a.uploadedAt, now)} style={{ padding: "6px 10px", color: "var(--fg2)", fontSize: 12, whiteSpace: "nowrap", fontFamily: MONO, fontVariantNumeric: "tabular-nums" }}>{absDTS(a.uploadedAt, now)}</td>
                 </tr>
               ))}
             </tbody>
