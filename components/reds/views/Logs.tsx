@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MONO, absDT } from "@/lib/reds/format";
+import { MONO, absDTS } from "@/lib/reds/format";
 import { parseLogLine, type LogLevel } from "@/lib/logs/parse";
 import { LOG_SOURCES, LOG_SOURCE_KEYS, type LogSourceKey } from "@/lib/logs/sources";
 import { EmptyState } from "../charts";
@@ -317,7 +317,7 @@ export function Logs() {
                 style={{ display: "flex", gap: 10, padding: "1px 14px", fontFamily: MONO, fontSize: 12, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word" }}
               >
                 <span aria-hidden style={{ flex: "0 0 auto", color: "var(--fg3)", opacity: 0.75 }}>
-                  {e.ts ? absDT(e.ts).split(", ").pop() : "—"}
+                  {e.ts ? absDTS(e.ts).split(", ").pop() : "—"}
                 </span>
                 <span style={{ flex: "1 1 auto", color: LEVEL_COLOR[e.level] }}>{e.message}</span>
               </div>

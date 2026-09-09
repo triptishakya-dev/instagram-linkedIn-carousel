@@ -98,29 +98,15 @@ export interface GeneratedPromptResult {
 }
 
 /**
- * Master System Prompt for LLM prompt refinement engine
- */
-export const SYSTEM_IMAGE_PROMPT = `
-You are an expert AI Visual Prompt Engineer specializing in high-converting Instagram carousels and LinkedIn social media graphics.
-
-Your objective is to turn simple concepts into hyper-detailed, photorealistic, or visually stunning image generation prompts that capture user attention instantly on social media feeds.
-
-Follow these 6 Golden Rules of Social Media Image Prompting:
-
-1. SUBJECT & ACTION: Define a crisp central focal point with strong visual hierarchy.
-2. COMPOSITION & LAYOUT: Specify camera angle, field of view, rule of thirds, and clean negative space (if text overlays will be added).
-3. LIGHTING & ENVIRONMENT: Use cinematic lighting terms (cinematic rim light, volumetric lighting, soft studio key light, octave render).
-4. COLOR & PALETTE: Request modern, harmonious color palettes (gradient mesh, deep contrast, vibrant accent highlights).
-5. STYLE & TECHNIQUE: Explicitly state the render engine or photography setup (Octane Render 3D, 85mm portrait, glassmorphism UI, vector geometry).
-6. PLATFORM SPECS:
-   - Instagram (4:5 / 1:1): Vertical vertical emphasis, bold contrast, mobile-first clarity.
-   - LinkedIn (1.91:1 / 1:1): Clean professional graphics, polished UI mockups, editorial executive look.
-
-AVOID: Generic terms like "beautiful", "HD", "4K", "trending on ArtStation", messy crowded composition, blurry text elements.
-`.trim();
-
-/**
- * Default style templates with pre-tuned visual attributes
+ * Default style templates with pre-tuned visual attributes.
+ *
+ * These are the whole of this module's remit: what an image should look like.
+ * A `SYSTEM_IMAGE_PROMPT` used to sit above them — an instruction addressed to
+ * a prompt-refinement model this pipeline does not have, imported by nothing.
+ * The standing rules an image request actually carries live in
+ * `prompt/system-rules.ts` and are wired through every adapter; the aesthetic
+ * advice that constant mixed in is already here, as lighting, camera and
+ * palette per style.
  */
 export const STYLE_PRESETS: Record<
   VisualStyle,
@@ -252,6 +238,65 @@ export const DIAGRAM_STYLES: VisualStyle[] = ["tech-infographic", "architecture-
 
 export const DEFAULT_NEGATIVE_PROMPT =
   "blurry, distorted text, low quality, pixelated, jpeg artifacts, ugly, oversaturated, deformed hands, duplicate limbs, cluttered background, out of frame, cropped head, watermark, signature, draft, bad anatomy";
+
+/* ------------------------------------------------------- reference images -- */
+
+/**
+ * What an attached reference is for. Ordered by precedence, highest first.
+ *
+ * `lib/generation/reference-image.ts` re-exports this as `ReferenceRole` and
+ * builds the actual attachments. What each role obliges the model to do is
+ * rules 4 and 7 in `prompt/system-rules.ts`; the union lives here because this
+ * module is what puts a role's name in front of the model.
+ */
+export type ReferenceKind = "logo" | "source" | "reference";
+
+/**
+ * Plain descriptors, not instructions. What each role obliges the model to do
+ * is rule 4 and rule 7 in `prompt/system-rules.ts`; all this has to do is say
+ * which picture is playing which part.
+ */
+const REFERENCE_INTRO: Record<ReferenceKind, string> = {
+  logo: "the brand logo",
+  source: "the source picture for this image",
+  reference: "a style and treatment reference",
+};
+
+/**
+ * Names the pictures attached to this request, and what each one is for.
+ *
+ * Deliberately nothing more. What to *do* with a reference — read its
+ * composition and lighting, adapt it rather than copy it, let the written
+ * instruction win where they disagree — is stated once, in
+ * `prompt/system-rules.ts`, and applies to every request whether or not
+ * anything is attached. This function used to restate that ladder in its own
+ * words, and a request carrying two near-identical precedence rules is how a
+ * model ends up splitting the difference between them.
+ *
+ * What only this function can know is which attachment is which. The rules can
+ * say a logo keeps its proportions; they cannot say that the second picture is
+ * the logo. So the manifest is the whole job, and it is ordered to match the
+ * order the adapters attach the images in.
+ */
+export function withReferenceGuidance(
+  prompt: string,
+  references: readonly { role: ReferenceKind; name: string }[],
+): string {
+  if (references.length === 0) return prompt;
+
+  const manifest = references
+    .map((ref, i) => `  ${i + 1}. "${ref.name}" — ${REFERENCE_INTRO[ref.role]}.`)
+    .join("\n");
+
+  const noun = references.length === 1 ? "image is" : "images are";
+
+  return [
+    prompt,
+    "",
+    `REFERENCE IMAGES: ${references.length} reference ${noun} attached to this request, in the order listed:`,
+    manifest,
+  ].join("\n");
+}
 
 /**
  * Generate a perfected AI image prompt for any social media post or carousel slide.

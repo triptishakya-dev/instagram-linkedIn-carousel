@@ -233,6 +233,29 @@ export async function putObject(
   );
 }
 
+/**
+ * Reads an object back into memory.
+ *
+ * The counterpart to `putObject`, and it exists for the same reason: the worker
+ * needs a reference image's actual bytes to hand an image model, and it is the
+ * one holding them. A presigned URL would not do instead — the provider would
+ * have to fetch it, which puts a signed URL to the user's private asset in
+ * somebody else's logs, and Gemini carries image inputs inline anyway.
+ */
+export async function getObject(key: string): Promise<{ bytes: Buffer; contentType: string | null }> {
+  const res = await s3().send(new GetObjectCommand({ Bucket: bucketName(), Key: key }));
+
+  // An object that exists always has a body; a missing one throws NoSuchKey
+  // above rather than arriving here empty. Checked anyway because the SDK types
+  // it as optional, and a silent zero-byte reference would be worse than this.
+  if (!res.Body) throw new Error(`Object ${key} has no body.`);
+
+  return {
+    bytes: Buffer.from(await res.Body.transformToByteArray()),
+    contentType: res.ContentType ?? null,
+  };
+}
+
 export async function copyObject(fromKey: string, toKey: string): Promise<void> {
   const bucket = bucketName();
   await s3().send(

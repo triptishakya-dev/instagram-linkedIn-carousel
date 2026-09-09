@@ -9,7 +9,7 @@ import {
   type DeleteGoalResult,
 } from "@/lib/api-client";
 import { PILL } from "@/lib/reds/data";
-import { MONO, absDT, inr, inrCost, num, relDT } from "@/lib/reds/format";
+import { MONO, absDT, absDTS, inr, inrCost, num, relDT } from "@/lib/reds/format";
 import { EmptyState } from "../charts";
 import { useReds } from "../store";
 import type { Goal } from "@/lib/reds/types";
@@ -332,7 +332,7 @@ function GoalsInner({ now }: { now: number }) {
                       {g.status[0].toUpperCase() + g.status.slice(1)}
                     </span>
                   </td>
-                  <td style={{ padding: 10, color: "var(--fg2)", fontSize: 12, whiteSpace: "nowrap" }}>{last ? relDT(last, now) : "never"}</td>
+                  <td title={last ? relDT(last, now) : ""} style={{ padding: 10, color: "var(--fg2)", fontSize: 12, whiteSpace: "nowrap", fontFamily: MONO, fontVariantNumeric: "tabular-nums" }}>{last ? absDTS(last, now) : "never"}</td>
                   <td style={{ padding: 10 }}>
                     <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
                       {actions.map((a) => (

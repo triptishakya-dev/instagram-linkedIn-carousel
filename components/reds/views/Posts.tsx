@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { ApiClientError, deletePost } from "@/lib/api-client";
 import { PILL, STATES } from "@/lib/reds/data";
-import { MONO, absDT, inr, num, relDT } from "@/lib/reds/format";
+import { MONO, absDT, absDTS, inr, num, relDT } from "@/lib/reds/format";
 import { EmptyState } from "../charts";
 import { useReds } from "../store";
 import type { Post, PostState } from "@/lib/reds/types";
@@ -587,8 +587,11 @@ function PostsInner({ now }: { now: number }) {
                     ) : null}
 
                     {s.cols.updated ? (
-                      <td title={absDT(p.updatedAt)} style={{ padding: `${rowPad}px 10px`, color: "var(--fg2)", fontSize: 12, whiteSpace: "nowrap" }}>
-                        {relDT(p.updatedAt, now)}
+                      <td
+                        title={relDT(p.updatedAt, now)}
+                        style={{ padding: `${rowPad}px 10px`, color: "var(--fg2)", fontSize: 12, whiteSpace: "nowrap", fontFamily: MONO, fontVariantNumeric: "tabular-nums" }}
+                      >
+                        {absDTS(p.updatedAt, now)}
                       </td>
                     ) : null}
                   </tr>

@@ -16,6 +16,7 @@
  */
 
 import { GenerationError } from "./litellm";
+import type { ReferenceImage } from "./reference-image";
 import type { AspectRatio } from "@/prompt/image-generator";
 
 /** Verified against this project's key; both return inline bytes. */
@@ -68,6 +69,23 @@ export type GenerateImageOptions = {
    * rather than someone else's bill to run up.
    */
   apiKey: string;
+  /**
+   * Pictures to hand the model alongside the text, as image inputs.
+   *
+   * `generateContent` is multimodal in both directions, so a reference costs
+   * nothing architecturally here — it is another part in the same `contents`
+   * array. That this parameter exists at all is the point: before it, a
+   * reference image the user attached to a goal had nowhere to go.
+   */
+  references?: readonly ReferenceImage[];
+  /**
+   * Standing rules, delivered in Gemini's own `systemInstruction` field.
+   *
+   * The reason this parameter is a string and not a flag: the same text goes to
+   * OpenAI through its `prompt`, because its image routes have no equivalent
+   * field. Only the delivery differs.
+   */
+  systemRules?: string;
   signal?: AbortSignal;
 };
 
@@ -80,11 +98,29 @@ export async function generateImage(opts: GenerateImageOptions): Promise<Generat
     ? `${opts.prompt}\n\nAvoid entirely: ${opts.negativePrompt}`
     : opts.prompt;
 
+  // References come before the text: that is Google's own guidance for
+  // image-plus-instruction prompts, and it is the order the instruction reads
+  // in — look at these, now do this. Sent inline as base64 rather than uploaded
+  // through the Files API, because a reference is used once, immediately, and an
+  // upload would be an extra round trip plus a resource to clean up afterwards.
+  const requestParts: unknown[] = [
+    ...(opts.references ?? []).map((ref) => ({
+      inline_data: { mime_type: ref.mime, data: ref.bytes.toString("base64") },
+    })),
+    { text },
+  ];
+
   const res = await fetch(`${GEMINI_BASE}/models/${model}:generateContent?key=${apiKey}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text }] }],
+      contents: [{ parts: requestParts }],
+      // A first-class field, kept out of `contents` so the standing rules are
+      // not competing with this request's own instruction for the model's
+      // attention — which is exactly what folding them into the text does.
+      ...(opts.systemRules
+        ? { systemInstruction: { parts: [{ text: opts.systemRules }] } }
+        : {}),
       ...(opts.aspectRatio
         ? { generationConfig: { imageConfig: { aspectRatio: opts.aspectRatio } } }
         : {}),

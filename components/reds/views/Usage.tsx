@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { PILL } from "@/lib/reds/data";
-import { DAY, MONO, absDT, inr, inrCost, iso, num } from "@/lib/reds/format";
+import { DAY, MONO, absDT, absDTS, inr, inrCost, iso, num } from "@/lib/reds/format";
 import { usageAt } from "@/lib/reds/usage-period";
 import { chip, seg, useReds } from "../store";
 import { Figures } from "../charts";
@@ -423,7 +423,7 @@ function UsageInner({ now }: { now: number }) {
               return (
                 <tbody key={key}>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={{ padding: "7px 10px", color: "var(--fg2)", fontSize: 12, whiteSpace: "nowrap" }}>{absDT(v.createdAt)}</td>
+                    <td style={{ padding: "7px 10px", color: "var(--fg2)", fontSize: 12, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{absDTS(v.createdAt, now)}</td>
                     <td style={{ padding: "7px 10px" }}>
                       <button type="button" onClick={() => s.go(`/posts/${p.id}`)} style={{ border: 0, background: "transparent", padding: 0, fontFamily: MONO, fontSize: 12, color: "var(--green-text)" }}>
                         {p.id}

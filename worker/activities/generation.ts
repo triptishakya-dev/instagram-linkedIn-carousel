@@ -29,21 +29,42 @@ import {
   type GoalConfig,
   type ResolvedGeneration,
 } from "@/lib/generation/resolve-prompt";
+import { loadReferenceImages, resolveReferenceAssets } from "@/lib/generation/load-references";
+import {
+  referenceCandidatesForSlide,
+  selectReferenceAssets,
+  type ReferenceAssetRef,
+} from "@/lib/generation/reference-image";
 import { publicUrlFor, putObject } from "@/lib/s3";
+import { IMAGE_SYSTEM_RULES, SYSTEM_RULES_VERSION } from "@/prompt/system-rules";
 import type { Platform } from "@/lib/types";
 import {
   DEFAULT_NEGATIVE_PROMPT,
   buildCarouselPrompts,
   buildImagePrompt,
   buildTechInfographicPrompt,
+  withReferenceGuidance,
 } from "@/prompt/image-generator";
 
 /* ------------------------------------------------------------------- types -- */
 
-export type SlidePrompt = {
+/** One slide's wording, before its reference assets are attached. */
+export type BuiltPrompt = {
   order: number;
   prompt: string;
   negativePrompt: string;
+};
+
+export type SlidePrompt = BuiltPrompt & {
+  /**
+   * The assets this slide is to be given as image inputs.
+   *
+   * Keys and metadata, never bytes: this travels through workflow history, and
+   * `load-references.ts` explains why an image must not. Empty is the ordinary
+   * case — a goal with no assets attached — and leaves the render on exactly
+   * the text-only path it took before.
+   */
+  references: ReferenceAssetRef[];
 };
 
 export type GenerationPlan = {
@@ -67,6 +88,26 @@ export type GenerationPlan = {
   imageModelRowId: string | null;
   /** Set when the model the goal asked for could not be used. */
   fallbackReason: string | null;
+  /**
+   * Reference assets the goal named that will not reach the model, and why.
+   *
+   * Surfaced on the run rather than logged, because a user who attached a
+   * reference and got a picture that ignores it needs to be told the file was a
+   * PDF, or has been deleted — silence there is the bug this change removes.
+   */
+  referenceNotes: string[];
+  /**
+   * The standing rules every slide in this run is generated under.
+   *
+   * Carried on the plan rather than read from the module inside the adapter, so
+   * one run is generated under one ruleset: a slide that retries an hour after a
+   * deploy gets the rules its siblings got, not the new ones. It also means the
+   * ruleset is in workflow history, which is the only durable record of what a
+   * given image was actually told.
+   */
+  systemRules: string;
+  /** Which ruleset the line above is, for the run note and for reading back. */
+  systemRulesVersion: string;
 };
 
 /* ------------------------------------------------------------ run tracking -- */
@@ -185,7 +226,59 @@ export async function planGenerationActivity(input: {
 
   /* ---- the prompts themselves ---- */
 
-  const slides = buildSlidePrompts(resolved);
+  const built = buildSlidePrompts(resolved);
+
+  /* ---- the reference assets those prompts are drawn against ---- */
+
+  // Resolved once for the post and then narrowed per slide. The logo and the
+  // style references apply to every slide; `imageAssetIds` is index-matched to
+  // slide order, the way the goal editor's "order maps to slide order" says.
+  //
+  // Metadata only. `Asset.sizeBytes` is enough to enforce the per-call budget,
+  // so nothing is downloaded here — the bytes are read inside
+  // `renderSlideActivity`, which is the only place they can be without being
+  // written into workflow history.
+  const assets = await resolveReferenceAssets({
+    userId: input.userId,
+    logoAssetId: resolved.brandLogoAssetId,
+    referenceAssetIds: resolved.referenceAssetIds,
+    imageAssetIds: resolved.imageAssetIds,
+  });
+
+  const referenceNotes: string[] = [];
+
+  if (assets.missing.length > 0) {
+    referenceNotes.push(
+      assets.missing.length === 1
+        ? "One reference asset this goal names is no longer in the library, so it was not used."
+        : `${assets.missing.length} reference assets this goal names are no longer in the library, so they were not used.`,
+    );
+  }
+
+  // Deduplicated across slides: the same asset is skipped for the same reason
+  // on all eight of them, and eight identical notes would bury the ones that
+  // differ.
+  const noted = new Set<string>();
+
+  const slides: SlidePrompt[] = built.map((slide) => {
+    const { selected, skipped } = selectReferenceAssets(
+      referenceCandidatesForSlide({
+        order: slide.order,
+        logo: assets.logo,
+        slideSources: assets.slideSources,
+        references: assets.references,
+      }),
+    );
+
+    for (const skip of skipped) {
+      const note = `Reference "${skip.name}" was not sent to the image model: ${skip.reason}.`;
+      if (noted.has(note)) continue;
+      noted.add(note);
+      referenceNotes.push(note);
+    }
+
+    return { ...slide, references: selected };
+  });
 
   return {
     goalId: goal.id,
@@ -207,6 +300,9 @@ export async function planGenerationActivity(input: {
     fallbackReason: [choice.fallbackReason, imageChoice.fallbackReason]
       .filter(Boolean)
       .join(" ") || null,
+    referenceNotes,
+    systemRules: IMAGE_SYSTEM_RULES,
+    systemRulesVersion: SYSTEM_RULES_VERSION,
   };
 }
 
@@ -218,7 +314,7 @@ export async function planGenerationActivity(input: {
  * by having a style preset wrapped around it. Multi-slide verbatim runs append
  * only a slide marker, which is the least that still distinguishes them.
  */
-export function buildSlidePrompts(resolved: ResolvedGeneration): SlidePrompt[] {
+export function buildSlidePrompts(resolved: ResolvedGeneration): BuiltPrompt[] {
   const { slideCount } = resolved;
 
   if (resolved.promptMode === "verbatim") {
@@ -342,9 +438,42 @@ export async function renderSlideActivity(input: {
   imageModel: string;
   /** The `AiModel` row behind `imageModel`, whose stored key is used if it has one. */
   imageModelRowId?: string | null;
+  /**
+   * Assets to hand the model as visual references for this slide, already
+   * selected and ordered by `planGenerationActivity`. Keys, not bytes.
+   */
+  references?: ReferenceAssetRef[];
+  /**
+   * The standing rules for this render, from the plan.
+   *
+   * Optional so an older workflow replaying from history -- whose plan has no
+   * such field -- renders exactly as it did, rather than failing on a shape it
+   * was never given.
+   */
+  systemRules?: string;
 }): Promise<RenderedSlide> {
   const apiKey = await modelApiKey(input.imageModelRowId);
   const billing = await modelBilling(input.imageModelRowId);
+
+  // The reference bytes are read here and nowhere earlier. Fetching them during
+  // planning would put a picture in an activity result, and therefore in
+  // workflow history for its whole retention period — the same rule the file
+  // header sets for generated bytes, applied to the inputs.
+  //
+  // Before the provider call, and before the invocation id is minted: a
+  // reference that cannot be read means no request goes out, so there is
+  // nothing to bill and nothing to record.
+  const references = await loadReferenceImages(input.references ?? []);
+
+  // The pictures themselves are what the model works from. This adds the one
+  // thing an attachment cannot say for itself — how much authority it carries
+  // against the written prompt — and returns the prompt untouched when there
+  // are no references, which is the ordinary case.
+  const prompt = withReferenceGuidance(input.prompt, references);
+
+  if (references.length > 0) {
+    logSlideReferences(input.order, input.imageModel, references);
+  }
 
   // Minted before the request, so it names this one invocation. A retry that
   // calls the provider again mints another and is billed as another.
@@ -365,11 +494,13 @@ export async function renderSlideActivity(input: {
   let image;
   try {
     image = await renderImage({
-      prompt: input.prompt,
+      prompt,
       negativePrompt: input.negativePrompt,
       aspectRatio: input.aspectRatio as never,
       model: input.imageModel,
       apiKey,
+      references,
+      systemRules: input.systemRules,
     });
   } catch (err) {
     // A refused or failed image still consumed a request, and often a charge.
@@ -433,7 +564,11 @@ export async function renderSlideActivity(input: {
         aspectRatio: aspectRatioOf(size),
         format: extension,
         fileSizeBytes: image.bytes.byteLength,
-        prompt: input.prompt,
+        // The composed prompt, not the planned one. This column is the audit
+        // trail for what produced the image, and with references attached the
+        // planned wording is only part of the request — the composed text
+        // names every picture that went with it.
+        prompt,
         negativePrompt: input.negativePrompt,
       },
     });
@@ -503,6 +638,40 @@ async function modelBilling(modelRowId: string | null | undefined): Promise<{
       outputPricePerMTokInr: row?.outputPricePerMTokInr ?? 0,
     },
   };
+}
+
+/**
+ * Records which pictures went to the provider with a slide.
+ *
+ * Names and byte counts only. The bytes themselves are never logged: a base64
+ * reference image would be megabytes of log line per slide, and the useful
+ * question a log answers here is "was the reference actually sent", which a
+ * name and a size answer.
+ *
+ * Temporal's logger is used through the activity context and swallowed when
+ * there is none, the same way `currentAttempt` is, so this stays callable from
+ * a plain unit test.
+ */
+function logSlideReferences(
+  order: number,
+  model: string,
+  references: readonly { name: string; role: string; mime: string; bytes: Buffer }[],
+): void {
+  try {
+    Context.current().log.info("Slide references sent to image model", {
+      order,
+      model,
+      count: references.length,
+      references: references.map((ref) => ({
+        name: ref.name,
+        role: ref.role,
+        mime: ref.mime,
+        bytes: ref.bytes.byteLength,
+      })),
+    });
+  } catch {
+    // Not running inside an activity; there is nowhere to log to.
+  }
 }
 
 /**

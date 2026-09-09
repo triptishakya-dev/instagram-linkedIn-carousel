@@ -78,6 +78,17 @@ export async function generatePostWorkflow(
 
   if (plan.fallbackReason) notes.push(plan.fallbackReason);
 
+  // A reference the user attached that will not reach the model is reported on
+  // the run. Generating something that quietly ignores it is what this pipeline
+  // used to do for every reference, and is the one outcome worth being loud
+  // about.
+  notes.push(...plan.referenceNotes);
+
+  // Which standing rules produced these images. Cheap to record and the only
+  // way to read an old post against the rules in force when it was made rather
+  // than against whatever is deployed now.
+  notes.push(`Image rules: ${plan.systemRulesVersion}.`);
+
   const { postId, replayed } = await createPostActivity({
     userId: params.userId,
     goalId: params.goalId,
@@ -111,6 +122,12 @@ export async function generatePostWorkflow(
         // The id, not the key: the activity decrypts the row's own key itself,
         // so nothing secret is written to workflow history.
         imageModelRowId: plan.imageModelRowId,
+        // Storage keys, for the same reason: the activity reads the reference
+        // bytes itself, so no picture is written to workflow history either.
+        references: slide.references,
+        // From the plan, so every slide of this run — including one that
+        // retries after a deploy — is generated under the same ruleset.
+        systemRules: plan.systemRules,
       });
     } catch (err) {
       // One refused or failed slide must not cost the whole post: the others
