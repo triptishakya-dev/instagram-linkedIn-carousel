@@ -3,16 +3,20 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ApiClientError,
+  CONNECT_INSTAGRAM_URL,
   blockingGoalsOf,
+  deleteAccount,
   deleteModel,
+  refreshAccount,
   rotateModelKey,
   listModels,
   updateModel,
   type BlockingGoal,
   type DeleteModelResult,
+  type SocialAccountRecord,
 } from "@/lib/api-client";
 import { PILL } from "@/lib/reds/data";
-import { MONO, absDT, inr, num } from "@/lib/reds/format";
+import { MONO, absDT, absDTS, inr, num, relDT } from "@/lib/reds/format";
 import { toModelWirePatch, toRedsModel } from "@/lib/reds/map";
 import { EmptyState } from "../charts";
 import { seg, useReds } from "../store";
@@ -30,13 +34,69 @@ const PLATFORMS: { plat: Platform; label: string; avatar: string }[] = [
   { plat: "linkedin", label: "LinkedIn", avatar: "var(--k200)" },
 ];
 
-interface Connection {
-  plat: Platform;
-  handle: string;
-  scopes: string;
-  expiresInDays: number;
-  syncedLabel: string;
+/** Days until a token lapses, or null when it does not expire. */
+function daysLeft(expiresAt: string | null, now: number): number | null {
+  if (!expiresAt) return null;
+  return Math.ceil((new Date(expiresAt).getTime() - now) / 86400000);
 }
+
+/**
+ * What a connection's state should say, in one place.
+ *
+ * Four states, not two, and the distinction matters: a lapsed token and a
+ * revoked grant both look "connected" in the database but cannot publish, and
+ * the row has to say so rather than showing a healthy pill next to an account
+ * that will fail at its scheduled time.
+ */
+function healthOf(account: SocialAccountRecord, now: number) {
+  const left = daysLeft(account.tokenExpiresAt, now);
+
+  if (!account.isValid) {
+    return { pill: PILL.r, label: "Reconnect needed", stale: true };
+  }
+  if (left !== null && left <= 0) {
+    return { pill: PILL.r, label: "Token expired", stale: true };
+  }
+  if (left !== null && left <= 7) {
+    return {
+      pill: { bg: "var(--amber-bg)", fg: "var(--amber)", br: "var(--amber-br)" },
+      label: `Token expires in ${left} ${left === 1 ? "day" : "days"}`,
+      stale: false,
+    };
+  }
+  return {
+    pill: PILL.g,
+    label: left === null ? "Token does not expire" : `Token valid ${left} more days`,
+    stale: false,
+  };
+}
+
+/**
+ * The outcome of a connection attempt, as the callback route reports it in
+ * `?connect=`.
+ *
+ * Each reason gets its own sentence because they call for different actions.
+ * `no-instagram` above all: the login worked and the token is good, and the
+ * only thing wrong is on Meta's side of the setup — flattening that into
+ * "connection failed" sends someone to read this code instead of their
+ * Instagram account settings.
+ */
+const CONNECT_MESSAGE: Record<string, string> = {
+  ok: "Instagram connected.",
+  cancelled: "Instagram connection cancelled.",
+  denied: "Meta declined the authorisation.",
+  "no-code": "Meta sent the browser back without an authorisation code. Try again.",
+  "state-mismatch":
+    "That connection attempt could not be verified, so it was rejected. Start again from this page.",
+  "not-professional":
+    "That Instagram account is personal, so it cannot publish. " +
+    "Switch it to Business or Creator in Instagram, then try again.",
+  "not-configured":
+    "Instagram is not configured on the server: the META_* variables in .env are incomplete.",
+  "no-encryption-key":
+    "TOKEN_ENCRYPTION_KEY is not set, so the access token could not be stored safely.",
+  failed: "Connecting Instagram failed.",
+};
 
 export function Accounts() {
   const s = useReds();
@@ -70,8 +130,53 @@ export function Accounts() {
       ...(role === "slides" || role === "both" ? { defSlideModel: id } : {}),
     }));
   };
-  // Populated by OAuth; nothing is connected until the user authorises.
-  const [connections] = useState<Connection[]>([]);
+  /**
+   * Connected accounts come from the store, which fetches `/api/accounts`.
+   *
+   * This used to be `useState<Connection[]>([])` — local state nothing ever
+   * wrote to, so the tab rendered "Not connected" whatever was in the database,
+   * and Connect showed a toast saying authorisation was not wired up.
+   */
+  const accounts = s.accounts;
+
+  /** Accounts being refreshed or disconnected, so a row can show its own work. */
+  const [busyAccount, setBusyAccount] = useState<string | null>(null);
+
+  /**
+   * Reports the outcome of a connection, then takes it out of the URL.
+   *
+   * The callback route has nowhere to put a result except the query string, so
+   * it lands here. Stripped with `replaceState` rather than a router navigation
+   * so a refresh does not re-toast a connection that happened minutes ago, and
+   * so it leaves no history entry to go "back" into.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const reason = params.get("connect");
+    if (!reason) return;
+
+    const detail = params.get("detail");
+    const handle = params.get("handle");
+    const base = CONNECT_MESSAGE[reason] ?? CONNECT_MESSAGE.failed;
+
+    s.toast(
+      reason === "ok" && handle
+        ? `Instagram connected as @${handle}.`
+        : detail
+          ? `${base} ${detail}`
+          : base,
+    );
+
+    if (reason === "ok") void s.reloadAccounts();
+
+    params.delete("connect");
+    params.delete("detail");
+    params.delete("handle");
+    const query = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (query ? `?${query}` : ""));
+    // Deliberately once per mount: this reads a one-shot result off the URL.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * Deletes in flight, so a card can show its own progress.
@@ -241,8 +346,14 @@ export function Accounts() {
     });
   };
 
-  const scheduledCount = (plat: Platform) =>
-    s.posts.filter((p) => p.state === "scheduled" && p.platforms.includes(plat)).length;
+  /**
+   * The client clock, null until it is read after mount.
+   *
+   * The store withholds it during prerender so a server-rendered "expires in 12
+   * days" cannot disagree with the browser on hydration, which is why every
+   * date-dependent label below is guarded on it.
+   */
+  const now = s.now;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -464,65 +575,165 @@ export function Accounts() {
       {tab === "connections" ? (
         <ul style={{ listStyle: "none", margin: 0, padding: 0, borderTop: "1px solid var(--border-strong)" }}>
           {PLATFORMS.map((p) => {
-            const c = connections.find((x) => x.plat === p.plat);
-            const soon = !!c && c.expiresInDays <= 7;
-            const pill = !c
-              ? PILL.n
-              : soon
-                ? { bg: "var(--amber-bg)", fg: "var(--amber)", br: "var(--amber-br)" }
-                : PILL.n;
+            const wire = p.plat === "instagram" ? "INSTAGRAM" : "LINKEDIN";
+            const c = accounts.find((a) => a.platform === wire) ?? null;
+            const health = c && now != null ? healthOf(c, now) : null;
+            const busy = busyAccount === c?.id;
 
-            const actions = c
-              ? [
-                  { label: "Reconnect", br: "var(--border)", bg: "var(--surface)", fg: "var(--fg2)", weight: 400, run: () => s.toast(p.label + " reconnected") },
-                  {
-                    label: "Disconnect",
-                    br: "var(--red-br)",
-                    bg: "var(--surface)",
-                    fg: "var(--red)",
-                    weight: 400,
-                    run: () =>
-                      s.ask({
-                        title: "Disconnect " + p.label + "?",
-                        body: `${scheduledCount(p.plat)} scheduled posts target ${p.label}. They will fail at their scheduled time until the account is reconnected.`,
-                        items: s.posts
-                          .filter((x) => x.state === "scheduled" && x.platforms.includes(p.plat))
-                          .slice(0, 5)
-                          .map((x) => ({ label: x.id + " — " + absDT(x.scheduledFor) })),
-                        actionLabel: "Disconnect",
-                        border: "1px solid var(--red)",
-                        bg: "var(--surface)",
-                        fg: "var(--red)",
-                        run: () => { s.ask(null); s.toast(p.label + " disconnected"); },
-                      }),
-                  },
-                ]
-              : [
-                  { label: "Connect", br: "var(--green-line)", bg: "var(--green-tint)", fg: "var(--green-text)", weight: 600, run: () => s.toast("Authorisation for " + p.label + " is not wired yet") },
-                ];
+            /** Only Instagram has a connect flow; LinkedIn's env exists but its routes do not. */
+            const connectable = p.plat === "instagram";
 
+            const disconnect = (account: SocialAccountRecord, force: boolean) => {
+              setBusyAccount(account.id);
+              deleteAccount(account.id, { force })
+                .then((res) => {
+                  s.ask(null);
+                  s.toast(
+                    res.draftedPostCount > 0
+                      ? `${p.label} disconnected. ${res.draftedPostCount} ${res.draftedPostCount === 1 ? "post" : "posts"} moved back to drafts.`
+                      : `${p.label} disconnected.`,
+                  );
+                  void s.reloadAccounts();
+                  void s.refreshPosts();
+                })
+                .catch((err: unknown) => {
+                  // A 409 is the server refusing because scheduled posts would
+                  // lose their destination. Its message already names how many,
+                  // so it becomes the confirm body rather than an error toast.
+                  if (err instanceof ApiClientError && err.status === 409) {
+                    s.ask({
+                      title: `Disconnect ${p.label}?`,
+                      body: err.message,
+                      items: s.posts
+                        .filter((x) => x.state === "scheduled" && x.platforms.includes(p.plat))
+                        .slice(0, 5)
+                        .map((x) => ({ label: x.id + " — " + absDT(x.scheduledFor) })),
+                      actionLabel: "Disconnect anyway",
+                      border: "1px solid var(--red)",
+                      bg: "var(--surface)",
+                      fg: "var(--red)",
+                      run: () => disconnect(account, true),
+                    });
+                    return;
+                  }
+                  s.ask(null);
+                  s.toast(err instanceof Error ? err.message : `Could not disconnect ${p.label}.`);
+                })
+                .finally(() => setBusyAccount(null));
+            };
+
+            const resync = (account: SocialAccountRecord) => {
+              setBusyAccount(account.id);
+              refreshAccount(account.id)
+                .then((res) =>
+                  s.toast(
+                    res.renewed
+                      ? `${p.label} renewed for another 60 days.`
+                      : `${p.label} is connected. The token was not due for renewal yet.`,
+                  ),
+                )
+                .catch((err: unknown) =>
+                  s.toast(err instanceof Error ? err.message : `Could not check ${p.label}.`),
+                )
+                .finally(() => {
+                  setBusyAccount(null);
+                  void s.reloadAccounts();
+                });
+            };
             return (
               <li key={p.plat} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, padding: "16px 2px", borderBottom: "1px solid var(--border)" }}>
-                <span aria-hidden style={{ width: 40, height: 40, borderRadius: "50%", border: "1px solid var(--border-strong)", background: c ? p.avatar : "var(--sunken)" }} />
+                {c?.avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={c.avatarUrl}
+                    alt=""
+                    width={40}
+                    height={40}
+                    style={{ width: 40, height: 40, borderRadius: "50%", border: "1px solid var(--border-strong)", objectFit: "cover" }}
+                  />
+                ) : (
+                  <span aria-hidden style={{ width: 40, height: 40, borderRadius: "50%", border: "1px solid var(--border-strong)", background: c ? p.avatar : "var(--sunken)" }} />
+                )}
+
                 <span style={{ flex: "1 1 220px", minWidth: 0 }}>
-                  <span style={{ display: "block", fontSize: 14, fontWeight: 500 }}>{p.label}</span>
-                  <span style={{ display: "block", fontSize: 12, color: "var(--fg2)" }}>{c ? c.handle : "No account linked"}</span>
+                  <span style={{ display: "block", fontSize: 14, fontWeight: 500 }}>
+                    {c?.name || p.label}
+                  </span>
+                  <span style={{ display: "block", fontSize: 12, color: "var(--fg2)", fontFamily: c?.username ? MONO : undefined }}>
+                    {c?.username ? "@" + c.username : "No account linked"}
+                  </span>
                 </span>
-                <span style={{ flex: "1 1 200px", fontSize: 12, color: "var(--fg2)" }}>{c ? c.scopes : "—"}</span>
-                <span style={{ flex: "0 0 auto", fontSize: 11, padding: "2px 8px", borderRadius: 999, background: pill.bg, color: pill.fg, border: `1px solid ${pill.br}` }}>
-                  {!c
-                    ? "Not connected"
-                    : soon
-                      ? `Token expires in ${c.expiresInDays} days`
-                      : `Token valid ${c.expiresInDays} more days`}
+
+                {/* Destinations, which is what publishing actually addresses. */}
+                <span style={{ flex: "1 1 200px", minWidth: 0, fontSize: 12, color: "var(--fg2)" }}>
+                  {c
+                    ? c.targets.length === 0
+                      ? "No destination"
+                      : c.targets.map((t) => (
+                          <span key={t.id} style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {t.name}
+                            {t.isDefault ? <span style={{ color: "var(--fg3)" }}> · default</span> : null}
+                          </span>
+                        ))
+                    : "—"}
                 </span>
-                <span style={{ flex: "0 0 auto", fontSize: 12, color: "var(--fg2)" }}>{c ? c.syncedLabel : "never synced"}</span>
+
+                <span style={{ flex: "0 0 auto", fontSize: 11, padding: "2px 8px", borderRadius: 999, background: (health?.pill ?? PILL.n).bg, color: (health?.pill ?? PILL.n).fg, border: `1px solid ${(health?.pill ?? PILL.n).br}` }}>
+                  {c ? (health?.label ?? "Connected") : "Not connected"}
+                </span>
+
+                <span
+                  title={c?.tokenExpiresAt && now != null ? "Token expires " + absDTS(c.tokenExpiresAt, now) : undefined}
+                  style={{ flex: "0 0 auto", fontSize: 12, color: "var(--fg2)" }}
+                >
+                  {c && now != null
+                    ? c.lastSyncAt
+                      ? "checked " + relDT(c.lastSyncAt, now)
+                      : "never checked"
+                    : "never connected"}
+                </span>
+
                 <span style={{ flex: "0 0 auto", display: "flex", gap: 8 }}>
-                  {actions.map((a) => (
-                    <button key={a.label} type="button" onClick={a.run} style={{ padding: "5px 11px", border: `1px solid ${a.br}`, borderRadius: "var(--r3)", background: a.bg, color: a.fg, fontSize: 12, fontWeight: a.weight }}>
-                      {a.label}
-                    </button>
-                  ))}
+                  {c ? (
+                    <>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => resync(c)}
+                        style={{ padding: "5px 11px", border: "1px solid var(--border)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--fg2)", fontSize: 12, opacity: busy ? 0.6 : 1 }}
+                      >
+                        {busy ? "Renewing…" : "Renew"}
+                      </button>
+                      {health?.stale ? (
+                        <a
+                          href={CONNECT_INSTAGRAM_URL}
+                          style={{ padding: "5px 11px", border: "1px solid var(--amber-br)", borderRadius: "var(--r3)", background: "var(--amber-bg)", color: "var(--amber)", fontSize: 12, fontWeight: 600, textDecoration: "none" }}
+                        >
+                          Reconnect
+                        </a>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => disconnect(c, false)}
+                        style={{ padding: "5px 11px", border: "1px solid var(--red-br)", borderRadius: "var(--r3)", background: "var(--surface)", color: "var(--red)", fontSize: 12, opacity: busy ? 0.6 : 1 }}
+                      >
+                        Disconnect
+                      </button>
+                    </>
+                  ) : connectable ? (
+                    // An anchor, not a button with a fetch: Meta's consent
+                    // screen is a page, so this has to be a top-level
+                    // navigation the browser performs itself.
+                    <a
+                      href={CONNECT_INSTAGRAM_URL}
+                      style={{ padding: "5px 11px", border: "1px solid var(--green-line)", borderRadius: "var(--r3)", background: "var(--green-tint)", color: "var(--green-text)", fontSize: 12, fontWeight: 600, textDecoration: "none" }}
+                    >
+                      Connect {p.label}
+                    </a>
+                  ) : (
+                    <span style={{ fontSize: 12, color: "var(--fg3)" }}>Not available yet</span>
+                  )}
                 </span>
               </li>
             );
