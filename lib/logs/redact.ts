@@ -55,7 +55,7 @@ const PATTERNS: { re: RegExp; replace: string }[] = [
   // Key-ish query parameters and assignments: key=, api_key=, apikey=,
   // access_token=, password=, secret=, token=.
   {
-    re: /\b((?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|password|passwd|secret|token|key))(["']?\s*[=:]\s*["']?)([^\s"'&,;)}\]]{8,})/gi,
+    re: /\b((?:[a-z]+[_-])?(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|password|passwd|secret|token|key))(["']?\s*[=:]\s*["']?)([^\s"'&,;)}\]]{8,})/gi,
     replace: `$1$2${MASK}`,
   },
   // Anthropic and OpenAI keys have recognisable prefixes.
