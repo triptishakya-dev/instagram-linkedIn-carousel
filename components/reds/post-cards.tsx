@@ -12,7 +12,7 @@
 
 import { useState } from "react";
 import { PILL, STATES } from "@/lib/reds/data";
-import { MONO, absDT, relDT } from "@/lib/reds/format";
+import { MONO, absDTS, relDT } from "@/lib/reds/format";
 import type { Platform, Post } from "@/lib/reds/types";
 
 /** One radius, one border, one padding, everywhere on this page. */
@@ -619,7 +619,7 @@ export function ActivityCard({ post, now }: { post: Post; now: number | null }) 
                   {now != null ? (
                     <span style={{ fontSize: 12, color: "var(--fg2)" }}>{relDT(x.at, now)}</span>
                   ) : null}
-                  <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--fg3)" }}>{absDT(x.at)}</span>
+                  <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--fg3)" }}>{absDTS(x.at)}</span>
                 </span>
               </li>
             );
