@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { listAssets } from "@/lib/api-client";
+import { listAccounts, listAssets, type SocialAccountRecord } from "@/lib/api-client";
 import { EMPTY_WORKSPACE, STATES } from "@/lib/reds/data";
 import { toRedsAsset, toRedsPost } from "@/lib/reds/map";
 import { runSiblings as groupRunSiblings } from "@/lib/reds/run-siblings";
@@ -79,6 +79,18 @@ interface Store {
   setAssets: React.Dispatch<React.SetStateAction<Asset[]>>;
   models: Model[];
   setModels: React.Dispatch<React.SetStateAction<Model[]>>;
+
+  /**
+   * Connected social accounts, straight from the API rather than mapped into a
+   * `reds` shape.
+   *
+   * The Connections tab and the navbar's connected pill both need to agree, and
+   * they used to disagree by construction: the tab held its own empty local
+   * state that nothing ever filled.
+   */
+  accounts: SocialAccountRecord[];
+  /** Re-reads `/api/accounts` after a connect, refresh or disconnect. */
+  reloadAccounts: () => Promise<void>;
 
   /** Re-reads the library from the API — signed preview URLs expire. */
   refreshAssets: () => Promise<void>;
@@ -217,6 +229,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
   const [usage, setUsage] = useState<UsageReport | null>(null);
   const [assets, setAssets] = useState<Asset[]>(EMPTY_WORKSPACE.assets);
   const [models, setModels] = useState<Model[]>(EMPTY_WORKSPACE.models);
+  const [accounts, setAccounts] = useState<SocialAccountRecord[]>([]);
 
   const [theme, setThemeRaw] = useState<Theme>("system");
   const [collapsed, setCollapsed] = useState(false);
@@ -410,6 +423,12 @@ export function RedsProvider({ children }: { children: ReactNode }) {
         /* library stays empty; the Assets view shows its own empty state */
       });
 
+    listAccounts(ac.signal)
+      .then(setAccounts)
+      .catch(() => {
+        /* nothing connected, which is also what an unreachable API looks like */
+      });
+
     fetch("/api/posts?limit=100", { signal: ac.signal })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -563,6 +582,14 @@ export function RedsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const reloadAccounts = useCallback(async () => {
+    try {
+      setAccounts(await listAccounts());
+    } catch {
+      /* keep what is on screen */
+    }
+  }, []);
+
   const refreshUsage = useCallback(async () => {
     try {
       const res = await fetch(`/api/usage?from=${monthStartIso()}`);
@@ -631,6 +658,7 @@ export function RedsProvider({ children }: { children: ReactNode }) {
   const value = useMemo<Store>(
     () => ({
       goals, setGoals, posts, setPosts, assets, setAssets, models, setModels,
+      accounts, reloadAccounts,
       refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal, runSiblings,
       usage, refreshUsage,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
@@ -646,7 +674,8 @@ export function RedsProvider({ children }: { children: ReactNode }) {
       budgetCap, setBudgetCap, vw, now, go, filtered,
     }),
     [
-      goals, posts, assets, models, refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal, runSiblings,
+      goals, posts, assets, models, accounts, reloadAccounts,
+      refreshAssets, refreshPosts, assetById, goalById, modelById, patchPost, postsForGoal, runSiblings,
       usage, refreshUsage,
       theme, setTheme, collapsed, toggleSidebar, density, setDensity,
       filterStates, filterGoal, sort, groupBy, closedGroups,
