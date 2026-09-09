@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ApiClientError, deleteAsset, triggerRun, uploadAsset } from "@/lib/api-client";
 import { isAllowedAssetMime, MAX_ASSET_BYTES } from "@/lib/media";
 import { PILL, STATES } from "@/lib/reds/data";
-import { MONO, absDT, fmtBytes, inr } from "@/lib/reds/format";
+import { MONO, absDTS, fmtBytes, inr } from "@/lib/reds/format";
 import { toRedsAsset, toRedsModel } from "@/lib/reds/map";
 import { useReds, seg } from "./store";
 import type { Model, ModelRole, UploadItem } from "@/lib/reds/types";
@@ -363,7 +363,7 @@ function AssetDrawer() {
     { k: "Dimensions", v: a.width ? `${a.width}×${a.height}` : "—", font: MONO },
     { k: "Size", v: fmtBytes(a.sizeBytes), font: MONO },
     { k: "Uploaded by", v: a.uploadedBy, font: "inherit" },
-    { k: "Uploaded", v: absDT(a.uploadedAt), font: MONO },
+    { k: "Uploaded", v: absDTS(a.uploadedAt), font: MONO },
     { k: "Tags", v: a.tags.join(", "), font: "inherit" },
   ];
 
