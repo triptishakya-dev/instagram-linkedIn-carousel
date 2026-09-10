@@ -17,7 +17,7 @@ import type { NextResponse } from "next/server";
 /**
  * `sameSite: "lax"`, and this is the whole reason the constant exists.
  *
- * The callback is a top-level navigation that facebook.com sends the browser
+ * The callback is a top-level navigation that instagram.com sends the browser
  * on, which is cross-site. Under `"strict"` the browser withholds the cookie on
  * exactly that navigation, so the callback sees no stored state and rejects
  * every single connection — with the code, the config and the app all correct.
