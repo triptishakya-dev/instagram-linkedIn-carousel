@@ -4,18 +4,19 @@
  * The path is not a choice made here: whatever `INSTAGRAM_REDIRECT_URI` (or
  * `META_REDIRECT_URI`) is set to has to be registered with Meta character for
  * character, and Meta will only send the browser to a registered URI. So the
- * handler lives here and the route files that mount it are two lines each,
- * which lets both the paths this project has used in anger keep working.
+ * handler lives here and the route file that mounts it is one line, so moving
+ * the callback is a directory rename plus a dashboard edit and nothing else.
  *
  * Every exit is a redirect to `/accounts?connect=<reason>` rather than a JSON
  * error. A person is looking at a browser tab at this point, not at a network
  * panel, and the Accounts page turns each reason into a sentence.
  *
- * The outcome worth designing for is `no-instagram`: the login succeeded, the
- * token is good, and there is still nothing to publish to because the account
- * is personal rather than Business/Creator, or is not linked to a Facebook
- * Page. It is the most common real result and it is not an error, so it gets
- * its own reason instead of being flattened into "failed".
+ * The outcome worth designing for is `not-professional`: the login succeeded,
+ * the token is good, and there is still nothing to publish to because the
+ * account is personal rather than Business/Creator. It is the most common real
+ * result and it is not an error, so it gets its own reason instead of being
+ * flattened into "failed". No Facebook Page is involved in this flow, so a
+ * missing Page is never the cause.
  */
 
 import { NextResponse } from "next/server";
